@@ -18,8 +18,7 @@
 # Random Syslog-formatted logs
 [sources.dummy_logs]
 type = "demo_logs"
-#format = "syslog"
-format = "json"
+format = "syslog"
 interval = 1
 
 # Parse Syslog logs
