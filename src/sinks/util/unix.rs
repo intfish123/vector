@@ -13,8 +13,8 @@ use crate::{
     codecs::Transformer,
     event::{Event, Finalizable},
     internal_events::{
-        ConnectionOpen, OpenGauge, SocketMode, UnixSocketConnectionEstablished, UnixSocketError,
-        UnixSocketOutgoingConnectionError,
+        ConnectionOpen, OpenGauge, SocketMode, UnixSocketConnectionEstablished,
+        UnixSocketOutgoingConnectionError, UnixSocketSendError,
     },
     sink::VecSinkExt,
     sinks::{
@@ -43,6 +43,7 @@ pub struct UnixSinkConfig {
     /// The Unix socket path.
     ///
     /// This should be an absolute path.
+    #[configurable(metadata(docs::examples = "/path/to/socket"))]
     pub path: PathBuf,
 }
 
@@ -155,6 +156,8 @@ where
 
                 let finalizers = event.take_finalizers();
                 let mut bytes = BytesMut::new();
+
+                // Errors are handled by `Encoder`.
                 if encoder.encode(event, &mut bytes).is_ok() {
                     let item = bytes.freeze();
                     EncodedEvent {
@@ -178,7 +181,7 @@ where
             };
 
             if let Err(error) = result {
-                emit!(UnixSocketError {
+                emit!(UnixSocketSendError {
                     error: &error,
                     path: &self.connector.path
                 });
@@ -191,13 +194,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use codecs::{encoding::Framer, NewlineDelimitedEncoder, TextSerializer};
+    use codecs::{encoding::Framer, NewlineDelimitedEncoder, TextSerializerConfig};
     use tokio::net::UnixListener;
 
     use super::*;
     use crate::{
         codecs::Encoder,
-        test_util::{random_lines_with_stream, CountReceiver},
+        test_util::{
+            components::{assert_sink_compliance, SINK_TAGS},
+            random_lines_with_stream, CountReceiver,
+        },
     };
 
     fn temp_uds_path(name: &str) -> PathBuf {
@@ -211,7 +217,7 @@ mod tests {
         assert!(UnixSinkConfig::new(good_path)
             .build(
                 Default::default(),
-                Encoder::<()>::new(TextSerializer::new().into())
+                Encoder::<()>::new(TextSerializerConfig::default().build().into())
             )
             .unwrap()
             .1
@@ -222,7 +228,7 @@ mod tests {
         assert!(UnixSinkConfig::new(bad_path)
             .build(
                 Default::default(),
-                Encoder::<()>::new(TextSerializer::new().into())
+                Encoder::<()>::new(TextSerializerConfig::default().build().into())
             )
             .unwrap()
             .1
@@ -245,14 +251,17 @@ mod tests {
                 Default::default(),
                 Encoder::<Framer>::new(
                     NewlineDelimitedEncoder::new().into(),
-                    TextSerializer::new().into(),
+                    TextSerializerConfig::default().build().into(),
                 ),
             )
             .unwrap();
 
         // Send the test data
         let (input_lines, events) = random_lines_with_stream(100, num_lines, None);
-        sink.run(events).await.unwrap();
+
+        assert_sink_compliance(&SINK_TAGS, async move { sink.run(events).await })
+            .await
+            .expect("Running sink failed");
 
         // Wait for output to connect
         receiver.connected().await;

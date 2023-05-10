@@ -13,6 +13,7 @@ use tower::Service;
 use vector_common::{
     finalization::{EventFinalizers, EventStatus, Finalizable},
     internal_event::CountByteSize,
+    request_metadata::{MetaDescriptive, RequestMetadata},
 };
 use vector_core::stream::DriverResponse;
 
@@ -22,7 +23,9 @@ pub(super) struct AmqpRequest {
     body: Bytes,
     exchange: String,
     routing_key: String,
+    properties: BasicProperties,
     finalizers: EventFinalizers,
+    metadata: RequestMetadata,
 }
 
 impl AmqpRequest {
@@ -30,13 +33,17 @@ impl AmqpRequest {
         body: Bytes,
         exchange: String,
         routing_key: String,
+        properties: BasicProperties,
         finalizers: EventFinalizers,
+        metadata: RequestMetadata,
     ) -> Self {
         Self {
             body,
             exchange,
             routing_key,
+            properties,
             finalizers,
+            metadata,
         }
     }
 }
@@ -44,6 +51,12 @@ impl AmqpRequest {
 impl Finalizable for AmqpRequest {
     fn take_finalizers(&mut self) -> EventFinalizers {
         std::mem::take(&mut self.finalizers)
+    }
+}
+
+impl MetaDescriptive for AmqpRequest {
+    fn get_metadata(&self) -> RequestMetadata {
+        self.metadata
     }
 }
 
@@ -61,8 +74,8 @@ impl DriverResponse for AmqpResponse {
         CountByteSize(1, self.byte_size)
     }
 
-    fn bytes_sent(&self) -> Option<(usize, &str)> {
-        Some((self.byte_size, "amqp_0_9_1"))
+    fn bytes_sent(&self) -> Option<usize> {
+        Some(self.byte_size)
     }
 }
 
@@ -107,7 +120,7 @@ impl Service<AmqpRequest> for AmqpService {
                     &req.routing_key,
                     BasicPublishOptions::default(),
                     req.body.as_ref(),
-                    BasicProperties::default(),
+                    req.properties,
                 )
                 .await;
 

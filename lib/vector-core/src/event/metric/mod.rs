@@ -1,7 +1,10 @@
 #[cfg(feature = "vrl")]
 use std::convert::TryFrom;
+
+#[cfg(feature = "vrl")]
+use vrl::compiler::value::VrlValueConvert;
+
 use std::{
-    collections::{btree_map, BTreeMap},
     convert::AsRef,
     fmt::{self, Display, Formatter},
     num::NonZeroU32,
@@ -10,11 +13,12 @@ use std::{
 use chrono::{DateTime, Utc};
 use vector_common::EventDataEq;
 use vector_config::configurable_component;
-#[cfg(feature = "vrl")]
-use vrl_lib::prelude::VrlValueConvert;
 
 use crate::{
-    event::{BatchNotifier, EventFinalizer, EventFinalizers, EventMetadata, Finalizable},
+    event::{
+        estimated_json_encoded_size_of::EstimatedJsonEncodedSizeOf, BatchNotifier, EventFinalizer,
+        EventFinalizers, EventMetadata, Finalizable,
+    },
     ByteSizeOf,
 };
 
@@ -27,14 +31,28 @@ pub use self::data::*;
 mod series;
 pub use self::series::*;
 
+mod tags;
+pub use self::tags::*;
+
 mod value;
 pub use self::value::*;
 
-pub type MetricTags = BTreeMap<String, String>;
+#[macro_export]
+macro_rules! metric_tags {
+    () => { $crate::event::MetricTags::default() };
+
+    ($($key:expr => $value:expr,)+) => { $crate::metric_tags!($($key => $value),+) };
+
+    ($($key:expr => $value:expr),*) => {
+        [
+            $( ($key.into(), $crate::event::metric::TagValue::from($value)), )*
+        ].into_iter().collect::<$crate::event::MetricTags>()
+    };
+}
 
 /// A metric.
 #[configurable_component]
-#[derive(Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Metric {
     #[serde(flatten)]
     pub(super) series: MetricSeries,
@@ -201,13 +219,19 @@ impl Metric {
         self.series.tags.as_ref()
     }
 
+    /// Gets a mutable reference to the tags of this metric, if they exist.
+    #[inline]
+    pub fn tags_mut(&mut self) -> Option<&mut MetricTags> {
+        self.series.tags.as_mut()
+    }
+
     /// Gets a reference to the timestamp of this metric, if it exists.
     #[inline]
     pub fn timestamp(&self) -> Option<DateTime<Utc>> {
         self.data.time.timestamp
     }
 
-    /// Gets a reference to the interval (in milliseconds) coverred by this metric, if it exists.
+    /// Gets a reference to the interval (in milliseconds) covered by this metric, if it exists.
     #[inline]
     pub fn interval_ms(&self) -> Option<NonZeroU32> {
         self.data.time.interval_ms
@@ -314,7 +338,7 @@ impl Metric {
 
     /// Returns the string value of a tag, if it exists
     pub fn tag_value(&self, name: &str) -> Option<String> {
-        self.tags().and_then(|t| t.get(name).cloned())
+        self.tags().and_then(|t| t.get(name)).map(ToOwned::to_owned)
     }
 
     /// Inserts a tag into this metric.
@@ -323,15 +347,16 @@ impl Metric {
     /// containing the previous value of the tag.
     ///
     /// *Note:* This will create the tags map if it is not present.
-    pub fn insert_tag(&mut self, name: String, value: String) -> Option<String> {
-        self.series.insert_tag(name, value)
+    pub fn replace_tag(&mut self, name: String, value: String) -> Option<String> {
+        self.series.replace_tag(name, value)
     }
 
-    /// Gets the given tag's corresponding entry in this metric.
-    ///
-    /// *Note:* This will create the tags map if it is not present, even if nothing is later inserted.
-    pub fn tag_entry(&mut self, key: String) -> btree_map::Entry<String, String> {
-        self.series.tag_entry(key)
+    pub fn set_multi_value_tag(
+        &mut self,
+        name: String,
+        values: impl IntoIterator<Item = TagValue>,
+    ) {
+        self.series.set_multi_value_tag(name, values);
     }
 
     /// Zeroes out the data in this metric.
@@ -359,6 +384,17 @@ impl Metric {
     #[must_use]
     pub fn subtract(&mut self, other: impl AsRef<MetricData>) -> bool {
         self.data.subtract(other.as_ref())
+    }
+
+    /// Reduces all the tag values to their single value, discarding any for which that value would
+    /// be null. If the result is empty, the tag set is dropped.
+    pub fn reduce_tags_to_single(&mut self) {
+        if let Some(tags) = &mut self.series.tags {
+            tags.reduce_to_single();
+            if tags.is_empty() {
+                self.series.tags = None;
+            }
+        }
     }
 }
 
@@ -398,14 +434,14 @@ impl Display for Metric {
     /// ```
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), fmt::Error> {
         if let Some(timestamp) = &self.data.time.timestamp {
-            write!(fmt, "{:?} ", timestamp)?;
+            write!(fmt, "{timestamp:?} ")?;
         }
         let kind = match self.data.kind {
             MetricKind::Absolute => '=',
             MetricKind::Incremental => '+',
         };
         self.series.fmt(fmt)?;
-        write!(fmt, " {} ", kind)?;
+        write!(fmt, " {kind} ")?;
         self.data.value.fmt(fmt)
     }
 }
@@ -426,6 +462,14 @@ impl ByteSizeOf for Metric {
     }
 }
 
+impl EstimatedJsonEncodedSizeOf for Metric {
+    fn estimated_json_encoded_size_of(&self) -> usize {
+        // TODO: For now we're using the in-memory representation of the metric, but we'll convert
+        // this to actually calculate the JSON encoded size in the near future.
+        self.size_of()
+    }
+}
+
 impl Finalizable for Metric {
     fn take_finalizers(&mut self) -> EventFinalizers {
         self.metadata.take_finalizers()
@@ -435,7 +479,7 @@ impl Finalizable for Metric {
 /// Metric kind.
 ///
 /// Metrics can be either absolute of incremental. Absolute metrics represent a sort of "last write wins" scenario,
-/// where the latest absolute value seen is meant to be the actual metric value.  In constrast, and perhaps intuitively,
+/// where the latest absolute value seen is meant to be the actual metric value.  In contrast, and perhaps intuitively,
 /// incremental metrics are meant to be additive, such that we don't know what total value of the metric is, but we know
 /// that we'll be adding or subtracting the given value from it.
 ///
@@ -453,24 +497,23 @@ pub enum MetricKind {
 }
 
 #[cfg(feature = "vrl")]
-impl TryFrom<::value::Value> for MetricKind {
+impl TryFrom<vrl::value::Value> for MetricKind {
     type Error = String;
 
-    fn try_from(value: ::value::Value) -> Result<Self, Self::Error> {
+    fn try_from(value: vrl::value::Value) -> Result<Self, Self::Error> {
         let value = value.try_bytes().map_err(|e| e.to_string())?;
         match std::str::from_utf8(&value).map_err(|e| e.to_string())? {
             "incremental" => Ok(Self::Incremental),
             "absolute" => Ok(Self::Absolute),
             value => Err(format!(
-                "invalid metric kind {}, metric kind must be `absolute` or `incremental`",
-                value
+                "invalid metric kind {value}, metric kind must be `absolute` or `incremental`"
             )),
         }
     }
 }
 
 #[cfg(feature = "vrl")]
-impl From<MetricKind> for ::value::Value {
+impl From<MetricKind> for vrl::value::Value {
     fn from(kind: MetricKind) -> Self {
         match kind {
             MetricKind::Incremental => "incremental".into(),
@@ -548,7 +591,7 @@ where
 {
     let mut this_sep = "";
     for item in items {
-        write!(fmt, "{}", this_sep)?;
+        write!(fmt, "{this_sep}")?;
         writer(fmt, item)?;
         this_sep = sep;
     }
@@ -557,9 +600,9 @@ where
 
 fn write_word(fmt: &mut Formatter<'_>, word: &str) -> Result<(), fmt::Error> {
     if word.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
-        write!(fmt, "{:?}", word)
+        write!(fmt, "{word:?}")
     } else {
-        write!(fmt, "{}", word)
+        write!(fmt, "{word}")
     }
 }
 
@@ -598,23 +641,24 @@ pub fn samples_to_buckets(samples: &[Sample], buckets: &[f64]) -> (Vec<Bucket>, 
 mod test {
     use std::collections::BTreeSet;
 
-    use chrono::{offset::TimeZone, DateTime, Utc};
-    use pretty_assertions::assert_eq;
+    use chrono::{offset::TimeZone, DateTime, Timelike, Utc};
+    use similar_asserts::assert_eq;
 
     use super::*;
 
     fn ts() -> DateTime<Utc> {
-        Utc.ymd(2018, 11, 14).and_hms_nano(8, 9, 10, 11)
+        Utc.with_ymd_and_hms(2018, 11, 14, 8, 9, 10)
+            .single()
+            .and_then(|t| t.with_nanosecond(11))
+            .expect("invalid timestamp")
     }
 
     fn tags() -> MetricTags {
-        vec![
-            ("normal_tag".to_owned(), "value".to_owned()),
-            ("true_tag".to_owned(), "true".to_owned()),
-            ("empty_tag".to_owned(), "".to_owned()),
-        ]
-        .into_iter()
-        .collect()
+        metric_tags!(
+            "normal_tag" => "value",
+            "true_tag" => "true",
+            "empty_tag" => "",
+        )
     }
 
     #[test]

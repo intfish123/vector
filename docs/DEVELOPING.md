@@ -16,6 +16,7 @@
   - [Unit tests](#unit-tests)
   - [Integration tests](#integration-tests)
   - [Blackbox tests](#blackbox-tests)
+  - [Property tests](#property-tests)
   - [Tips and tricks](#tips-and-tricks)
     - [Faster builds With `sccache`](#faster-builds-with-sccache)
     - [Testing specific components](#testing-specific-components)
@@ -217,6 +218,17 @@ Yep!
 warn!(message = "Failed to merge value.", %error);
 ```
 
+#### Panics
+
+As a general rule, code in Vector should *not* panic.
+
+However, there are very rare situations where the code makes certain assumptions
+about the given state and if those assumptions are not met this is clearly due
+to a bug within Vector. In this situation Vector cannot safely proceed. Issuing
+a panic here is acceptable.
+
+All potential panics *MUST* be clearly documented in the function documentation.
+
 ### Feature flags
 
 When a new component (a source, transform, or sink) is added, it has to be put
@@ -252,7 +264,7 @@ the features corresponding to these components in `Cargo.toml`.
 Sinks may implement a health check as a means for validating their configuration
 against the environment and external systems. Ideally, this allows the system to
 inform users of problems such as insufficient credentials, unreachable
-endpoints, non-existent tables, etc. They're not perfect, however, since it's
+endpoints, nonexistent tables, etc. They're not perfect, however, since it's
 impossible to exhaustively check for issues that may happen at runtime.
 
 When implementing health checks, we prefer false positives to false negatives.
@@ -347,6 +359,10 @@ environments. It is typically used for benchmarking, but also correctness
 testing.
 
 You can run these tests within a PR as described in the [CI section](CONTRIBUTING.md).
+
+### Property tests
+
+Vector prefers the use of [Proptest](https://github.com/proptest-rs/proptest) for any property tests.
 
 ### Tips and tricks
 

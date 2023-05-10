@@ -1,15 +1,15 @@
 use std::borrow::Cow;
 
 use bytes::Bytes;
-use datadog_filter::{
+use vector_config::configurable_component;
+use vector_core::event::{Event, LogEvent, Value};
+use vrl::datadog_filter::{
     build_matcher,
     regex::{wildcard_regex, word_regex},
     Filter, Matcher, Resolver, Run,
 };
-use datadog_search_syntax::parse;
-use datadog_search_syntax::{Comparison, ComparisonValue, Field};
-use vector_config::configurable_component;
-use vector_core::event::{Event, LogEvent, Value};
+use vrl::datadog_search_syntax::parse;
+use vrl::datadog_search_syntax::{Comparison, ComparisonValue, Field};
 
 use crate::conditions::{Condition, Conditional, ConditionalConfig};
 
@@ -297,7 +297,7 @@ where
     array_match(field, move |values| values.iter().any(&func))
 }
 
-/// Retrns a `Matcher` that returns true if the log event resolves to an array of strings,
+/// Returns a `Matcher` that returns true if the log event resolves to an array of strings,
 /// where at least one string matches the provided `func`.
 fn any_string_match<S, F>(field: S, func: F) -> Box<dyn Matcher<LogEvent>>
 where
@@ -312,10 +312,10 @@ where
 
 #[cfg(test)]
 mod test {
-    use datadog_filter::{build_matcher, Filter, Resolver};
-    use datadog_search_syntax::parse;
     use serde_json::json;
     use vector_core::event::Event;
+    use vrl::datadog_filter::{build_matcher, Filter, Resolver};
+    use vrl::datadog_search_syntax::parse;
 
     use super::*;
     use crate::log_event;

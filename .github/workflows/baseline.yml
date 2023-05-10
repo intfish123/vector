@@ -1,9 +1,11 @@
+# Executes various builds of vector to time the results in order to track build times.
+#
+# This workflow is unrelated to the Regression workflow.
+
 name: Baseline Timings
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */2 * * *"
 
 env:
   CI: true
@@ -11,7 +13,7 @@ env:
 jobs:
   release-build-optimized:
     name: "Release Build (optimized)"
-    runs-on: [linux, test-runner]
+    runs-on: [linux, ubuntu-20.04-8core]
     steps:
       - uses: colpal/actions-clean@v1
       - uses: actions/checkout@v3
@@ -22,7 +24,7 @@ jobs:
 
   release-build-normal:
     name: "Release Build (normal)"
-    runs-on: [linux, test-runner]
+    runs-on: [linux, ubuntu-20.04-8core]
     env:
       # We're not actually doing a debug build, we're just turning off the logic
       # in release-flags.sh so that we don't override the Cargo "release" profile
@@ -38,7 +40,7 @@ jobs:
 
   debug-build:
     name: "Debug Build"
-    runs-on: [linux, test-runner]
+    runs-on: [linux, ubuntu-20.04-8core]
     steps:
       - uses: colpal/actions-clean@v1
       - uses: actions/checkout@v3
@@ -49,7 +51,7 @@ jobs:
 
   debug-rebuild:
     name: "Debug Rebuild"
-    runs-on: [linux, test-runner]
+    runs-on: [linux, ubuntu-20.04-8core]
     steps:
       - uses: colpal/actions-clean@v1
       - uses: actions/checkout@v3
@@ -62,7 +64,7 @@ jobs:
 
   check:
     name: "Cargo Check"
-    runs-on: [linux, test-runner]
+    runs-on: [linux, ubuntu-20.04-8core]
     steps:
       - uses: colpal/actions-clean@v1
       - uses: actions/checkout@v3

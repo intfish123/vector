@@ -1,12 +1,16 @@
+use std::borrow::Cow;
 use std::{collections::BTreeMap, convert::TryFrom, marker::PhantomData};
 
 use lookup::lookup_v2::OwnedSegment;
 use lookup::{OwnedTargetPath, OwnedValuePath, PathPrefix};
 use snafu::Snafu;
-use vrl_lib::{prelude::VrlValueConvert, ProgramInfo, SecretTarget};
+use vrl::compiler::value::VrlValueConvert;
+use vrl::compiler::{ProgramInfo, SecretTarget, Target};
+use vrl::value::Value;
 
-use super::{Event, EventMetadata, LogEvent, Metric, MetricKind, TraceEvent, Value};
+use super::{Event, EventMetadata, LogEvent, Metric, MetricKind, TraceEvent};
 use crate::config::log_schema;
+use crate::event::metric::TagValue;
 
 const VALID_METRIC_PATHS_SET: &str = ".name, .namespace, .timestamp, .kind, .tags";
 
@@ -26,7 +30,11 @@ pub enum VrlTarget {
     // `LogEvent` is essentially just a destructured `event::LogEvent`, but without the semantics
     // that `fields` must always be a `Map` variant.
     LogEvent(Value, EventMetadata),
-    Metric { metric: Metric, value: Value },
+    Metric {
+        metric: Metric,
+        value: Value,
+        multi_value_tags: bool,
+    },
     Trace(Value, EventMetadata),
 }
 
@@ -81,7 +89,7 @@ impl Iterator for TargetIter<TraceEvent> {
 }
 
 impl VrlTarget {
-    pub fn new(event: Event, info: &ProgramInfo) -> Self {
+    pub fn new(event: Event, info: &ProgramInfo, multi_value_metric_tags: bool) -> Self {
         match event {
             Event::Log(event) => {
                 let (value, metadata) = event.into_parts();
@@ -93,7 +101,11 @@ impl VrlTarget {
                 // values, even if the field is accessed more than once.
                 let value = precompute_metric_value(&metric, info);
 
-                VrlTarget::Metric { metric, value }
+                VrlTarget::Metric {
+                    metric,
+                    value,
+                    multi_value_tags: multi_value_metric_tags,
+                }
             }
             Event::Trace(event) => {
                 let (fields, metadata) = event.into_parts();
@@ -162,12 +174,34 @@ impl VrlTarget {
     }
 }
 
-impl vrl_lib::Target for VrlTarget {
-    fn target_insert(
-        &mut self,
-        target_path: &OwnedTargetPath,
-        value: ::value::Value,
-    ) -> Result<(), String> {
+fn set_metric_tag_values(name: String, value: &Value, metric: &mut Metric, multi_value_tags: bool) {
+    if multi_value_tags {
+        let tag_values = value
+            .as_array()
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|value| match value {
+                Value::Bytes(bytes) => {
+                    Some(TagValue::Value(String::from_utf8_lossy(bytes).to_string()))
+                }
+                Value::Null => Some(TagValue::Bare),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        metric.set_multi_value_tag(name, tag_values);
+    } else {
+        // set a single tag value
+        if let Ok(tag_value) = value.try_bytes_utf8_lossy().map(Cow::into_owned) {
+            metric.replace_tag(name, tag_value);
+        } else if value.is_null() {
+            metric.set_multi_value_tag(name, vec![TagValue::Bare]);
+        }
+    }
+}
+
+impl Target for VrlTarget {
+    fn target_insert(&mut self, target_path: &OwnedTargetPath, value: Value) -> Result<(), String> {
         let path = &target_path.path;
         match target_path.prefix {
             PathPrefix::Event => match self {
@@ -178,6 +212,7 @@ impl vrl_lib::Target for VrlTarget {
                 VrlTarget::Metric {
                     ref mut metric,
                     value: metric_value,
+                    multi_value_tags,
                 } => {
                     if path.is_root() {
                         return Err(MetricPathError::SetPathError.to_string());
@@ -193,20 +228,20 @@ impl vrl_lib::Target for VrlTarget {
 
                                 metric.remove_tags();
                                 for (field, value) in &value {
-                                    metric.insert_tag(
+                                    set_metric_tag_values(
                                         field.as_str().to_owned(),
-                                        value
-                                            .try_bytes_utf8_lossy()
-                                            .map_err(|e| e.to_string())?
-                                            .into_owned(),
+                                        value,
+                                        metric,
+                                        *multi_value_tags,
                                     );
                                 }
                             }
                             ["tags", field] => {
-                                let value = value.clone().try_bytes().map_err(|e| e.to_string())?;
-                                metric.insert_tag(
+                                set_metric_tag_values(
                                     (*field).to_owned(),
-                                    String::from_utf8_lossy(&value).into_owned(),
+                                    &value,
+                                    metric,
+                                    *multi_value_tags,
                                 );
                             }
                             ["name"] => {
@@ -289,7 +324,7 @@ impl vrl_lib::Target for VrlTarget {
         &mut self,
         target_path: &OwnedTargetPath,
         compact: bool,
-    ) -> Result<Option<::value::Value>, String> {
+    ) -> Result<Option<vrl::value::Value>, String> {
         match target_path.prefix {
             PathPrefix::Event => match self {
                 VrlTarget::LogEvent(ref mut log, _) | VrlTarget::Trace(ref mut log, _) => {
@@ -298,6 +333,7 @@ impl vrl_lib::Target for VrlTarget {
                 VrlTarget::Metric {
                     ref mut metric,
                     value,
+                    multi_value_tags: _,
                 } => {
                     if target_path.path.is_root() {
                         return Err(MetricPathError::SetPathError.to_string());
@@ -312,9 +348,9 @@ impl vrl_lib::Target for VrlTarget {
                             ["namespace"] => metric.series.name.namespace.take().map(Into::into),
                             ["timestamp"] => metric.data.time.timestamp.take().map(Into::into),
                             ["tags"] => metric.series.tags.take().map(|map| {
-                                map.into_iter()
+                                map.into_iter_single()
                                     .map(|(k, v)| (k, v.into()))
-                                    .collect::<::value::Value>()
+                                    .collect::<vrl::value::Value>()
                             }),
                             ["tags", field] => metric.remove_tag(field).map(Into::into),
                             _ => {
@@ -478,7 +514,7 @@ fn precompute_metric_value(metric: &Metric, info: &ProgramInfo) -> Value {
                 if let Some(tags) = metric.tags().cloned() {
                     map.insert(
                         "tags".to_owned(),
-                        tags.into_iter()
+                        tags.into_iter_single()
                             .map(|(tag, value)| (tag, value.into()))
                             .collect::<BTreeMap<_, _>>()
                             .into(),
@@ -524,7 +560,7 @@ fn precompute_metric_value(metric: &Metric, info: &ProgramInfo) -> Value {
                             .tags()
                             .cloned()
                             .unwrap()
-                            .into_iter()
+                            .into_iter_single()
                             .map(|(tag, value)| (tag, value.into()))
                             .collect::<BTreeMap<_, _>>()
                             .into(),
@@ -551,19 +587,15 @@ enum MetricPathError<'a> {
 mod test {
     use chrono::{offset::TimeZone, Utc};
     use lookup::owned_value_path;
-    use pretty_assertions::assert_eq;
-    use vector_common::btreemap;
-    use vrl_lib::Target;
+    use similar_asserts::assert_eq;
+    use vrl::value::btreemap;
 
-    use super::{
-        super::{metric::MetricTags, MetricValue},
-        *,
-    };
+    use super::super::MetricValue;
+    use super::*;
+    use crate::metric_tags;
 
     #[test]
     fn log_get() {
-        use vector_common::btreemap;
-
         let cases = vec![
             (
                 BTreeMap::new(),
@@ -605,11 +637,11 @@ mod test {
                 target_queries: vec![],
                 target_assignments: vec![],
             };
-            let target = VrlTarget::new(Event::Log(LogEvent::from(value)), &info);
+            let target = VrlTarget::new(Event::Log(LogEvent::from(value)), &info, false);
             let path = OwnedTargetPath::event(path);
 
             assert_eq!(
-                vrl_lib::Target::target_get(&target, &path).map(Option::<&Value>::cloned),
+                Target::target_get(&target, &path).map(Option::<&Value>::cloned),
                 expect
             );
         }
@@ -618,8 +650,6 @@ mod test {
     #[allow(clippy::too_many_lines)]
     #[test]
     fn log_insert() {
-        use vector_common::btreemap;
-
         let cases = vec![
             (
                 BTreeMap::from([("foo".into(), "bar".into())]),
@@ -711,17 +741,17 @@ mod test {
                 target_queries: vec![],
                 target_assignments: vec![],
             };
-            let mut target = VrlTarget::new(Event::Log(LogEvent::from(object)), &info);
+            let mut target = VrlTarget::new(Event::Log(LogEvent::from(object)), &info, false);
             let expect = LogEvent::from(expect);
-            let value: ::value::Value = value;
+            let value: Value = value;
             let path = OwnedTargetPath::event(path);
 
             assert_eq!(
-                vrl_lib::Target::target_insert(&mut target, &path, value.clone()),
+                Target::target_insert(&mut target, &path, value.clone()),
                 result
             );
             assert_eq!(
-                vrl_lib::Target::target_get(&target, &path).map(Option::<&Value>::cloned),
+                Target::target_get(&target, &path).map(Option::<&Value>::cloned),
                 Ok(Some(value))
             );
             assert_eq!(
@@ -810,18 +840,16 @@ mod test {
                 target_queries: vec![],
                 target_assignments: vec![],
             };
-            let mut target = VrlTarget::new(Event::Log(LogEvent::from(object)), &info);
+            let mut target = VrlTarget::new(Event::Log(LogEvent::from(object)), &info, false);
             let path = OwnedTargetPath::event(path);
-            let removed = vrl_lib::Target::target_get(&target, &path)
-                .unwrap()
-                .cloned();
+            let removed = Target::target_get(&target, &path).unwrap().cloned();
 
             assert_eq!(
-                vrl_lib::Target::target_remove(&mut target, &path, compact),
+                Target::target_remove(&mut target, &path, compact),
                 Ok(removed)
             );
             assert_eq!(
-                vrl_lib::Target::target_get(&target, &OwnedTargetPath::event_root())
+                Target::target_get(&target, &OwnedTargetPath::event_root())
                     .map(Option::<&Value>::cloned),
                 Ok(expect)
             );
@@ -830,28 +858,22 @@ mod test {
 
     #[test]
     fn log_into_events() {
-        use vector_common::btreemap;
+        use vrl::value::btreemap;
 
         let cases = vec![
             (
-                ::value::Value::from(btreemap! {"foo" => "bar"}),
+                Value::from(btreemap! {"foo" => "bar"}),
                 vec![btreemap! {"foo" => "bar"}],
             ),
-            (::value::Value::from(1), vec![btreemap! {"message" => 1}]),
+            (Value::from(1), vec![btreemap! {"message" => 1}]),
+            (Value::from("2"), vec![btreemap! {"message" => "2"}]),
+            (Value::from(true), vec![btreemap! {"message" => true}]),
             (
-                ::value::Value::from("2"),
-                vec![btreemap! {"message" => "2"}],
-            ),
-            (
-                ::value::Value::from(true),
-                vec![btreemap! {"message" => true}],
-            ),
-            (
-                ::value::Value::from(vec![
-                    ::value::Value::from(1),
-                    ::value::Value::from("2"),
-                    ::value::Value::from(true),
-                    ::value::Value::from(btreemap! {"foo" => "bar"}),
+                Value::from(vec![
+                    Value::from(1),
+                    Value::from("2"),
+                    Value::from(true),
+                    Value::from(btreemap! {"foo" => "bar"}),
                 ]),
                 vec![
                     btreemap! {"message" => 1},
@@ -873,10 +895,10 @@ mod test {
             let mut target = VrlTarget::new(
                 Event::Log(LogEvent::new_with_metadata(metadata.clone())),
                 &info,
+                false,
             );
 
-            ::vrl_lib::Target::target_insert(&mut target, &OwnedTargetPath::event_root(), value)
-                .unwrap();
+            Target::target_insert(&mut target, &OwnedTargetPath::event_root(), value).unwrap();
 
             assert_eq!(
                 match target.into_events() {
@@ -900,12 +922,12 @@ mod test {
             MetricValue::Counter { value: 1.23 },
         )
         .with_namespace(Some("zoob"))
-        .with_tags(Some({
-            let mut map = MetricTags::new();
-            map.insert("tig".to_string(), "tog".to_string());
-            map
-        }))
-        .with_timestamp(Some(Utc.ymd(2020, 12, 10).and_hms(12, 0, 0)));
+        .with_tags(Some(metric_tags!("tig" => "tog")))
+        .with_timestamp(Some(
+            Utc.with_ymd_and_hms(2020, 12, 10, 12, 0, 0)
+                .single()
+                .expect("invalid timestamp"),
+        ));
 
         let info = ProgramInfo {
             fallible: false,
@@ -920,14 +942,14 @@ mod test {
             ],
             target_assignments: vec![],
         };
-        let target = VrlTarget::new(Event::Metric(metric), &info);
+        let target = VrlTarget::new(Event::Metric(metric), &info, false);
 
         assert_eq!(
             Ok(Some(
                 btreemap! {
                     "name" => "zub",
                     "namespace" => "zoob",
-                    "timestamp" => Utc.ymd(2020, 12, 10).and_hms(12, 0, 0),
+                    "timestamp" => Utc.with_ymd_and_hms(2020, 12, 10, 12, 0, 0).single().expect("invalid timestamp"),
                     "tags" => btreemap! { "tig" => "tog" },
                     "kind" => "absolute",
                     "type" => "counter",
@@ -947,18 +969,14 @@ mod test {
             MetricKind::Absolute,
             MetricValue::Counter { value: 1.23 },
         )
-        .with_tags(Some({
-            let mut map = MetricTags::new();
-            map.insert("tig".to_string(), "tog".to_string());
-            map
-        }));
+        .with_tags(Some(metric_tags!("tig" => "tog")));
 
         let cases = vec![
             (
-                owned_value_path!("name"),          // Path
-                Some(::value::Value::from("name")), // Current value
-                ::value::Value::from("namefoo"),    // New value
-                false,                              // Test deletion
+                owned_value_path!("name"), // Path
+                Some(Value::from("name")), // Current value
+                Value::from("namefoo"),    // New value
+                false,                     // Test deletion
             ),
             (
                 owned_value_path!("namespace"),
@@ -969,12 +987,15 @@ mod test {
             (
                 owned_value_path!("timestamp"),
                 None,
-                Utc.ymd(2020, 12, 8).and_hms(12, 0, 0).into(),
+                Utc.with_ymd_and_hms(2020, 12, 8, 12, 0, 0)
+                    .single()
+                    .expect("invalid timestamp")
+                    .into(),
                 true,
             ),
             (
                 owned_value_path!("kind"),
-                Some(::value::Value::from("absolute")),
+                Some(Value::from("absolute")),
                 "incremental".into(),
                 false,
             ),
@@ -997,7 +1018,7 @@ mod test {
             ],
             target_assignments: vec![],
         };
-        let mut target = VrlTarget::new(Event::Metric(metric), &info);
+        let mut target = VrlTarget::new(Event::Metric(metric), &info, false);
 
         for (path, current, new, delete) in cases {
             let path = OwnedTargetPath::event(path);
@@ -1029,11 +1050,7 @@ mod test {
             MetricKind::Absolute,
             MetricValue::Counter { value: 1.23 },
         )
-        .with_tags(Some({
-            let mut map = MetricTags::new();
-            map.insert("tig".to_string(), "tog".to_string());
-            map
-        }));
+        .with_tags(Some(metric_tags!("tig" => "tog")));
 
         let info = ProgramInfo {
             fallible: false,
@@ -1041,19 +1058,20 @@ mod test {
             target_queries: vec![],
             target_assignments: vec![],
         };
-        let mut target = VrlTarget::new(Event::Metric(metric), &info);
+        let mut target = VrlTarget::new(Event::Metric(metric), &info, false);
         let _result = target.target_insert(
             &OwnedTargetPath::event(owned_value_path!("tags")),
             Value::Object(BTreeMap::from([("a".into(), "b".into())])),
         );
 
         match target {
-            VrlTarget::Metric { metric, value: _ } => {
+            VrlTarget::Metric {
+                metric,
+                value: _,
+                multi_value_tags: _,
+            } => {
                 assert!(metric.tags().is_some());
-                assert_eq!(
-                    metric.tags().unwrap(),
-                    &BTreeMap::from([("a".into(), "b".into())])
-                );
+                assert_eq!(metric.tags().unwrap(), &crate::metric_tags!("a" => "b"));
             }
             _ => panic!("must be a metric"),
         }
@@ -1084,7 +1102,7 @@ mod test {
             target_queries: vec![],
             target_assignments: vec![],
         };
-        let mut target = VrlTarget::new(Event::Metric(metric), &info);
+        let mut target = VrlTarget::new(Event::Metric(metric), &info, false);
 
         assert_eq!(
             Err(format!(
@@ -1122,5 +1140,48 @@ mod test {
                 "tags", "foo", "flork"
             )))
         );
+    }
+
+    #[test]
+    fn test_metric_insert_get_multi_value_tag() {
+        let metric = Metric::new(
+            "name",
+            MetricKind::Absolute,
+            MetricValue::Counter { value: 1.23 },
+        );
+        let info = ProgramInfo {
+            fallible: false,
+            abortable: false,
+            target_queries: vec![],
+            target_assignments: vec![],
+        };
+
+        let mut target = VrlTarget::new(Event::Metric(metric), &info, true);
+
+        let value = Value::Array(vec!["a".into(), "".into(), Value::Null, "b".into()]);
+        target
+            .target_insert(
+                &OwnedTargetPath::event(owned_value_path!("tags", "foo")),
+                value,
+            )
+            .unwrap();
+
+        let vrl_tags_value = target
+            .target_get(&OwnedTargetPath::event(owned_value_path!("tags")))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            vrl_tags_value,
+            &Value::Object(BTreeMap::from([(
+                "foo".into(),
+                Value::Array(vec!["a".into(), "".into(), Value::Null, "b".into()])
+            )]))
+        );
+
+        let VrlTarget::Metric { metric, .. } = target else {unreachable!()};
+
+        // get single value (should be the last one)
+        assert_eq!(metric.tag_value("foo"), Some("b".into()));
     }
 }

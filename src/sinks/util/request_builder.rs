@@ -1,8 +1,9 @@
 use std::io;
 
 use bytes::Bytes;
+use vector_common::request_metadata::RequestMetadata;
 
-use super::{encoding::Encoder, Compression, Compressor};
+use super::{encoding::Encoder, metadata::RequestMetadataBuilder, Compression, Compressor};
 
 pub struct EncodeResult<P> {
     pub payload: P,
@@ -61,7 +62,7 @@ pub trait RequestBuilder<Input> {
     ///
     /// The metadata should be any information that needs to be passed back to `build_request`
     /// as-is, such as event finalizers, while the events are the actual events to process.
-    fn split_input(&self, input: Input) -> (Self::Metadata, Self::Events);
+    fn split_input(&self, input: Input) -> (Self::Metadata, RequestMetadataBuilder, Self::Events);
 
     fn encode_events(
         &self,
@@ -73,7 +74,7 @@ pub trait RequestBuilder<Input> {
         // of clash-y with `Self::Metadata`.
         let mut compressor = Compressor::from(self.compression());
         let is_compressed = compressor.is_compressed();
-        let _ = self.encoder().encode_input(events, &mut compressor)?;
+        _ = self.encoder().encode_input(events, &mut compressor)?;
 
         let payload = compressor.into_inner().freeze();
         let result = if is_compressed {
@@ -90,6 +91,7 @@ pub trait RequestBuilder<Input> {
     fn build_request(
         &self,
         metadata: Self::Metadata,
+        request_metadata: RequestMetadata,
         payload: EncodeResult<Self::Payload>,
     ) -> Self::Request;
 }

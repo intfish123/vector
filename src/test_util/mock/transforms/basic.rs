@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
-use value::Value;
 use vector_config::configurable_component;
+use vector_core::config::LogNamespace;
 use vector_core::{
-    config::{DataType, Input, Output},
+    config::{DataType, Input, TransformOutput},
     event::{
         metric::{MetricData, Sample},
         Event, MetricValue,
@@ -12,11 +12,12 @@ use vector_core::{
     schema,
     transform::{FunctionTransform, OutputBuffer, Transform},
 };
+use vrl::value::Value;
 
-use crate::config::{TransformConfig, TransformContext};
+use crate::config::{OutputId, TransformConfig, TransformContext};
 
 /// Configuration for the `test_basic` transform.
-#[configurable_component(transform("test_basic"))]
+#[configurable_component(transform("test_basic", "Test (basic)"))]
 #[derive(Clone, Debug, Default)]
 pub struct BasicTransformConfig {
     /// Suffix to add to the message of any log event.
@@ -35,6 +36,7 @@ impl BasicTransformConfig {
 }
 
 #[async_trait]
+#[typetag::serde(name = "test_basic")]
 impl TransformConfig for BasicTransformConfig {
     async fn build(&self, _globals: &TransformContext) -> crate::Result<Transform> {
         Ok(Transform::function(BasicTransform {
@@ -47,8 +49,19 @@ impl TransformConfig for BasicTransformConfig {
         Input::all()
     }
 
-    fn outputs(&self, _: &schema::Definition) -> Vec<Output> {
-        vec![Output::default(DataType::all())]
+    fn outputs(
+        &self,
+        _: enrichment::TableRegistry,
+        definitions: &[(OutputId, schema::Definition)],
+        _: LogNamespace,
+    ) -> Vec<TransformOutput> {
+        vec![TransformOutput::new(
+            DataType::all(),
+            definitions
+                .iter()
+                .map(|(output, definition)| (output.clone(), definition.clone()))
+                .collect(),
+        )]
     }
 }
 
@@ -65,7 +78,8 @@ impl FunctionTransform for BasicTransform {
                 let mut v = log
                     .get(crate::config::log_schema().message_key())
                     .unwrap()
-                    .to_string_lossy();
+                    .to_string_lossy()
+                    .into_owned();
                 v.push_str(&self.suffix);
                 log.insert(crate::config::log_schema().message_key(), Value::from(v));
             }
@@ -107,7 +121,8 @@ impl FunctionTransform for BasicTransform {
                 let mut v = trace
                     .get(crate::config::log_schema().message_key())
                     .unwrap()
-                    .to_string_lossy();
+                    .to_string_lossy()
+                    .into_owned();
                 v.push_str(&self.suffix);
                 trace.insert(crate::config::log_schema().message_key(), Value::from(v));
             }

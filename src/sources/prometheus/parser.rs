@@ -1,20 +1,12 @@
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::cmp::Ordering;
 
 use chrono::{DateTime, TimeZone, Utc};
 use prometheus_parser::{proto, GroupKind, MetricGroup, ParserError};
 
 use crate::event::{
-    metric::{Bucket, Metric, MetricKind, MetricValue, Quantile},
+    metric::{Bucket, Metric, MetricKind, MetricTags, MetricValue, Quantile},
     Event,
 };
-
-fn has_values_or_none(tags: BTreeMap<String, String>) -> Option<BTreeMap<String, String>> {
-    if tags.is_empty() {
-        None
-    } else {
-        Some(tags)
-    }
-}
 
 fn utc_timestamp(timestamp: Option<i64>, default: DateTime<Utc>) -> DateTime<Utc> {
     timestamp
@@ -49,7 +41,7 @@ fn reparse_groups(groups: Vec<MetricGroup>) -> Vec<Event> {
                         },
                     )
                     .with_timestamp(Some(utc_timestamp(key.timestamp, start)))
-                    .with_tags(has_values_or_none(key.labels));
+                    .with_tags(MetricTags::from(key.labels).as_option());
 
                     result.push(counter.into());
                 }
@@ -64,7 +56,7 @@ fn reparse_groups(groups: Vec<MetricGroup>) -> Vec<Event> {
                         },
                     )
                     .with_timestamp(Some(utc_timestamp(key.timestamp, start)))
-                    .with_tags(has_values_or_none(key.labels));
+                    .with_tags(MetricTags::from(key.labels).as_option());
 
                     result.push(gauge.into());
                 }
@@ -100,7 +92,7 @@ fn reparse_groups(groups: Vec<MetricGroup>) -> Vec<Event> {
                             },
                         )
                         .with_timestamp(Some(utc_timestamp(key.timestamp, start)))
-                        .with_tags(has_values_or_none(key.labels))
+                        .with_tags(MetricTags::from(key.labels).as_option())
                         .into(),
                     );
                 }
@@ -120,12 +112,12 @@ fn reparse_groups(groups: Vec<MetricGroup>) -> Vec<Event> {
                                         value: q.value,
                                     })
                                     .collect(),
-                                count: u64::from(metric.count),
+                                count: metric.count,
                                 sum: metric.sum,
                             },
                         )
                         .with_timestamp(Some(utc_timestamp(key.timestamp, start)))
-                        .with_tags(has_values_or_none(key.labels))
+                        .with_tags(MetricTags::from(key.labels).as_option())
                         .into(),
                     );
                 }
@@ -138,16 +130,21 @@ fn reparse_groups(groups: Vec<MetricGroup>) -> Vec<Event> {
 
 #[cfg(test)]
 mod test {
-    use chrono::{TimeZone, Utc};
+    use chrono::{TimeZone, Timelike, Utc};
     use once_cell::sync::Lazy;
-    use pretty_assertions::assert_eq;
-    use vector_common::{assert_event_data_eq, btreemap};
+    use similar_asserts::assert_eq;
+    use vector_common::assert_event_data_eq;
+    use vector_core::metric_tags;
 
     use super::*;
     use crate::event::metric::{Metric, MetricKind, MetricValue};
 
-    static TIMESTAMP: Lazy<DateTime<Utc>> =
-        Lazy::new(|| Utc.ymd(2021, 2, 4).and_hms_milli(4, 5, 6, 789));
+    static TIMESTAMP: Lazy<DateTime<Utc>> = Lazy::new(|| {
+        Utc.with_ymd_and_hms(2021, 2, 4, 4, 5, 6)
+            .single()
+            .and_then(|t| t.with_nanosecond(789 * 1_000_000))
+            .expect("invalid timestamp")
+    });
 
     fn parse_text(text: &str) -> Result<Vec<Metric>, ParserError> {
         super::parse_text(text).map(|events| events.into_iter().map(Event::into_metric).collect())
@@ -232,14 +229,10 @@ mod test {
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 0.23 },
                 )
-                .with_tags(Some(
-                    vec![
-                        ("labelname".into(), "val2".into()),
-                        ("basename".into(), "base\"v\\al\nue".into())
-                    ]
-                    .into_iter()
-                    .collect()
-                ))
+                .with_tags(Some(metric_tags!(
+                    "labelname" => "val2",
+                    "basename" => "base\"v\\al\nue",
+                )))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "name2",
@@ -248,14 +241,10 @@ mod test {
                         value: std::f64::INFINITY
                     },
                 )
-                .with_tags(Some(
-                    vec![
-                        ("labelname".into(), "val2".into()),
-                        ("basename".into(), "basevalue2".into())
-                    ]
-                    .into_iter()
-                    .collect()
-                ))
+                .with_tags(Some(metric_tags!(
+                    "labelname" => "val2",
+                    "basename" => "basevalue2",
+                )))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "name2",
@@ -264,11 +253,7 @@ mod test {
                         value: std::f64::NEG_INFINITY
                     },
                 )
-                .with_tags(Some(
-                    vec![("labelname".into(), "val1".into()),]
-                        .into_iter()
-                        .collect()
-                ))
+                .with_tags(Some(metric_tags!("labelname" => "val1")))
                 .with_timestamp(Some(*TIMESTAMP)),
             ]),
         );
@@ -292,28 +277,20 @@ mod test {
                     MetricValue::Counter { value: 1027.0 },
                 )
                 .with_timestamp(Utc.timestamp_opt(1395066363, 0).latest())
-                .with_tags(Some(
-                    vec![
-                        ("method".into(), "post".into()),
-                        ("code".into(), "200".into())
-                    ]
-                    .into_iter()
-                    .collect()
-                )),
+                .with_tags(Some(metric_tags!(
+                    "method" => "post",
+                    "code" => "200",
+                ))),
                 Metric::new(
                     "http_requests_total",
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 3.0 },
                 )
                 .with_timestamp(Utc.timestamp_opt(1395066363, 0).latest())
-                .with_tags(Some(
-                    vec![
-                        ("method".into(), "post".into()),
-                        ("code".into(), "400".into())
-                    ]
-                    .into_iter()
-                    .collect()
-                ))
+                .with_tags(Some(metric_tags!(
+                    "method" => "post",
+                    "code" => "400"
+                )))
             ]),
         );
     }
@@ -386,14 +363,10 @@ mod test {
                     value: 1458255915.0
                 },
             )
-            .with_tags(Some(
-                vec![
-                    ("path".into(), "C:\\DIR\\FILE.TXT".into()),
-                    ("error".into(), "Cannot find file:\n\"FILE.TXT\"".into())
-                ]
-                .into_iter()
-                .collect()
-            ))
+            .with_tags(Some(metric_tags!(
+                "path" => "C:\\DIR\\FILE.TXT",
+                "error" => "Cannot find file:\n\"FILE.TXT\"",
+            )))
             .with_timestamp(Some(*TIMESTAMP))]),
         );
     }
@@ -412,7 +385,7 @@ mod test {
                 MetricKind::Absolute,
                 MetricValue::Counter { value: 0.0 },
             )
-            .with_tags(Some(btreemap! { "tag" => "}" }))
+            .with_tags(Some(metric_tags! { "tag" => "}" }))
             .with_timestamp(Some(*TIMESTAMP))]),
         );
     }
@@ -431,7 +404,7 @@ mod test {
                 MetricKind::Absolute,
                 MetricValue::Counter { value: 0.0 },
             )
-            .with_tags(Some(btreemap! { "tag" => "a,b" }))
+            .with_tags(Some(metric_tags! { "tag" => "a,b" }))
             .with_timestamp(Some(*TIMESTAMP))]),
         );
     }
@@ -450,7 +423,7 @@ mod test {
                 MetricKind::Absolute,
                 MetricValue::Counter { value: 0.0 },
             )
-            .with_tags(Some(btreemap! { "tag" => "\\n" }))
+            .with_tags(Some(metric_tags! { "tag" => "\\n" }))
             .with_timestamp(Some(*TIMESTAMP))]),
         );
     }
@@ -469,7 +442,7 @@ mod test {
                 MetricKind::Absolute,
                 MetricValue::Counter { value: 0.0 },
             )
-            .with_tags(Some(btreemap! { "tag" => " * " }))
+            .with_tags(Some(metric_tags! { "tag" => " * " }))
             .with_timestamp(Some(*TIMESTAMP))]),
         );
     }
@@ -487,14 +460,8 @@ mod test {
                 MetricKind::Absolute,
                 MetricValue::Gauge { value: 1890.0 },
             )
-            .with_tags(Some(
-                vec![
-                    ("registry".into(), "default".into()),
-                    ("content_type".into(), "text/plain; version=0.0.4".into())
-                ]
-                .into_iter()
-                .collect()
-            ))
+            .with_tags(Some(metric_tags!( "registry" => "default",
+                    "content_type" => "text/plain; version=0.0.4" )))
             .with_timestamp(Some(*TIMESTAMP))]),
         );
     }
@@ -534,9 +501,7 @@ mod test {
             )
             .with_timestamp(Utc.timestamp_opt(-3982045, 0).latest())
             .with_tags(Some(
-                vec![("problem".into(), "division by zero".into())]
-                    .into_iter()
-                    .collect()
+                metric_tags!("problem" => "division by zero")
             ))]),
         );
     }
@@ -558,20 +523,14 @@ mod test {
                     MetricValue::Gauge { value: 1.0 },
                 )
                 .with_timestamp(Utc.timestamp_opt(1395066363, 0).latest())
-                .with_tags(Some(
-                    vec![("env".into(), "production".into())]
-                        .into_iter()
-                        .collect()
-                )),
+                .with_tags(Some(metric_tags!("env" => "production"))),
                 Metric::new(
                     "latency",
                     MetricKind::Absolute,
                     MetricValue::Gauge { value: 2.0 },
                 )
                 .with_timestamp(Utc.timestamp_opt(1395066363, 0).latest())
-                .with_tags(Some(
-                    vec![("env".into(), "testing".into())].into_iter().collect()
-                ))
+                .with_tags(Some(metric_tags!("env" => "testing")))
             ]),
         );
     }
@@ -826,7 +785,7 @@ mod test {
                         sum: 19690.129384881966,
                     },
                 )
-                    .with_tags(Some(vec![("runner".into(), "z".into())].into_iter().collect()))
+                    .with_tags(Some(metric_tags!("runner" => "z")))
                     .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "gitlab_runner_job_duration_seconds", MetricKind::Absolute, MetricValue::AggregatedHistogram {
@@ -846,7 +805,7 @@ mod test {
                         sum: 28.975436316,
                     },
                 )
-                    .with_tags(Some(vec![("runner".into(), "x".into())].into_iter().collect()))
+                    .with_tags(Some(metric_tags!("runner" => "x")))
                     .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "gitlab_runner_job_duration_seconds", MetricKind::Absolute, MetricValue::AggregatedHistogram {
@@ -858,7 +817,7 @@ mod test {
                         sum: 381111.7498891335,
                     },
                 )
-                    .with_tags(Some(vec![("runner".into(), "y".into())].into_iter().collect()))
+                    .with_tags(Some(metric_tags!("runner" => "y")))
                     .with_timestamp(Some(*TIMESTAMP))
             ]),
         );
@@ -905,9 +864,7 @@ mod test {
                         sum: 1.7560473e+07,
                     },
                 )
-                .with_tags(Some(
-                    vec![("service".into(), "a".into())].into_iter().collect()
-                ))
+                .with_tags(Some(metric_tags!("service" => "a")))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "go_gc_duration_seconds",
@@ -970,14 +927,14 @@ mod test {
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 263719.0 },
                 )
-                .with_tags(Some(btreemap! { "direction" => "in", "host" => "*" }))
+                .with_tags(Some(metric_tags! { "direction" => "in", "host" => "*" }))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "nginx_server_bytes",
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 255061.0 },
                 )
-                .with_tags(Some(btreemap! { "direction" => "in", "host" => "_" }))
+                .with_tags(Some(metric_tags! { "direction" => "in", "host" => "_" }))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "nginx_server_bytes",
@@ -985,7 +942,7 @@ mod test {
                     MetricValue::Counter { value: 8658.0 },
                 )
                 .with_tags(Some(
-                    btreemap! { "direction" => "in", "host" => "nginx-vts-status" }
+                    metric_tags! { "direction" => "in", "host" => "nginx-vts-status" }
                 ))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
@@ -993,14 +950,14 @@ mod test {
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 944199.0 },
                 )
-                .with_tags(Some(btreemap! { "direction" => "out", "host" => "*" }))
+                .with_tags(Some(metric_tags! { "direction" => "out", "host" => "*" }))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "nginx_server_bytes",
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 360775.0 },
                 )
-                .with_tags(Some(btreemap! { "direction" => "out", "host" => "_" }))
+                .with_tags(Some(metric_tags! { "direction" => "out", "host" => "_" }))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "nginx_server_bytes",
@@ -1008,7 +965,7 @@ mod test {
                     MetricValue::Counter { value: 583424.0 },
                 )
                 .with_tags(Some(
-                    btreemap! { "direction" => "out", "host" => "nginx-vts-status" }
+                    metric_tags! { "direction" => "out", "host" => "nginx-vts-status" }
                 ))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
@@ -1016,42 +973,44 @@ mod test {
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 0.0 },
                 )
-                .with_tags(Some(btreemap! { "host" => "*", "status" => "bypass" }))
+                .with_tags(Some(metric_tags! { "host" => "*", "status" => "bypass" }))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "nginx_server_cache",
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 0.0 },
                 )
-                .with_tags(Some(btreemap! { "host" => "*", "status" => "expired" }))
+                .with_tags(Some(metric_tags! { "host" => "*", "status" => "expired" }))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "nginx_server_cache",
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 0.0 },
                 )
-                .with_tags(Some(btreemap! { "host" => "*", "status" => "hit" }))
+                .with_tags(Some(metric_tags! { "host" => "*", "status" => "hit" }))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "nginx_server_cache",
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 0.0 },
                 )
-                .with_tags(Some(btreemap! { "host" => "*", "status" => "miss" }))
+                .with_tags(Some(metric_tags! { "host" => "*", "status" => "miss" }))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "nginx_server_cache",
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 0.0 },
                 )
-                .with_tags(Some(btreemap! { "host" => "*", "status" => "revalidated" }))
+                .with_tags(Some(
+                    metric_tags! { "host" => "*", "status" => "revalidated" }
+                ))
                 .with_timestamp(Some(*TIMESTAMP)),
                 Metric::new(
                     "nginx_server_cache",
                     MetricKind::Absolute,
                     MetricValue::Counter { value: 0.0 },
                 )
-                .with_tags(Some(btreemap! { "host" => "*", "status" => "scarce" }))
+                .with_tags(Some(metric_tags! { "host" => "*", "status" => "scarce" }))
                 .with_timestamp(Some(*TIMESTAMP))
             ]
         );

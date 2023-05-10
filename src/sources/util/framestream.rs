@@ -20,6 +20,7 @@ use futures::{
     sink::{Sink, SinkExt},
     stream::{self, StreamExt, TryStreamExt},
 };
+use lookup::OwnedValuePath;
 use tokio::{self, net::UnixListener, task::JoinHandle};
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_util::codec::{length_delimited, Framed};
@@ -151,7 +152,7 @@ impl FrameStreamReader {
             None
         } else if self.state.expect_control_frame {
             self.state.expect_control_frame = false;
-            let _ = self.handle_control_frame(frame);
+            _ = self.handle_control_frame(frame);
             None
         } else {
             //data frame
@@ -195,7 +196,7 @@ impl FrameStreamReader {
                     }
                     ControlHeader::Start => {
                         //check for content type
-                        let _ = self.process_fields(header, &mut frame)?;
+                        _ = self.process_fields(header, &mut frame)?;
                         //if didn't error, then we are ok to change state
                         self.state.control_state = ControlState::ReadingData;
                         self.state.is_bidirectional = false; //if first message was START then we are unidirectional (no responses)
@@ -207,7 +208,7 @@ impl FrameStreamReader {
                 match header {
                     ControlHeader::Start => {
                         //check for content type
-                        let _ = self.process_fields(header, &mut frame)?;
+                        _ = self.process_fields(header, &mut frame)?;
                         //if didn't error, then we are ok to change state
                         self.state.control_state = ControlState::ReadingData;
                     }
@@ -218,7 +219,7 @@ impl FrameStreamReader {
                 match header {
                     ControlHeader::Stop => {
                         //check there aren't any fields
-                        let _ = self.process_fields(header, &mut frame)?;
+                        _ = self.process_fields(header, &mut frame)?;
                         if self.state.is_bidirectional {
                             //send FINISH frame -- but only if we are bidirectional
                             self.send_control_frame(Self::make_frame(ControlHeader::Finish, None));
@@ -325,10 +326,10 @@ impl FrameStreamReader {
 
     fn make_frame(header: ControlHeader, content_type: Option<String>) -> Bytes {
         let mut frame = BytesMut::new();
-        frame.extend(&header.to_u32().to_be_bytes());
+        frame.extend(header.to_u32().to_be_bytes());
         if let Some(s) = content_type {
-            frame.extend(&ControlField::ContentType.to_u32().to_be_bytes()); //field type: ContentType
-            frame.extend(&(s.len() as u32).to_be_bytes()); //length of type
+            frame.extend(ControlField::ContentType.to_u32().to_be_bytes()); //field type: ContentType
+            frame.extend((s.len() as u32).to_be_bytes()); //length of type
             frame.extend(s.as_bytes());
         }
         Bytes::from(frame)
@@ -354,8 +355,9 @@ pub trait FrameHandler {
     fn socket_file_mode(&self) -> Option<u32>;
     fn socket_receive_buffer_size(&self) -> Option<usize>;
     fn socket_send_buffer_size(&self) -> Option<usize>;
-    fn host_key(&self) -> String;
-    fn timestamp_key(&self) -> String;
+    fn host_key(&self) -> &Option<OwnedValuePath>;
+    fn timestamp_key(&self) -> Option<&OwnedValuePath>;
+    fn source_type_key(&self) -> &str;
 }
 
 /**
@@ -388,7 +390,7 @@ pub fn build_framestream_unix_source(
 
     // system's 'net.core.rmem_max' might have to be changed if socket receive buffer is not updated properly
     if let Some(socket_receive_buffer_size) = frame_handler.socket_receive_buffer_size() {
-        let _ = nix::sys::socket::setsockopt(
+        _ = nix::sys::socket::setsockopt(
             listener.as_raw_fd(),
             nix::sys::socket::sockopt::RcvBuf,
             &(socket_receive_buffer_size),
@@ -403,7 +405,7 @@ pub fn build_framestream_unix_source(
 
     // system's 'net.core.wmem_max' might have to be changed if socket send buffer is not updated properly
     if let Some(socket_send_buffer_size) = frame_handler.socket_send_buffer_size() {
-        let _ = nix::sys::socket::setsockopt(
+        _ = nix::sys::socket::setsockopt(
             listener.as_raw_fd(),
             nix::sys::socket::sockopt::SndBuf,
             &(socket_send_buffer_size),
@@ -600,6 +602,7 @@ mod test {
         sink::{Sink, SinkExt},
         stream::{self, StreamExt},
     };
+    use lookup::{owned_value_path, path, OwnedValuePath};
     use tokio::{
         self,
         net::UnixStream,
@@ -607,6 +610,7 @@ mod test {
         time::{Duration, Instant},
     };
     use tokio_util::codec::{length_delimited, Framed};
+    use vector_core::config::{LegacyKey, LogNamespace};
 
     use super::{
         build_framestream_unix_source, spawn_event_handling_tasks, ControlField, ControlHeader,
@@ -631,8 +635,10 @@ mod test {
         socket_receive_buffer_size: Option<usize>,
         socket_send_buffer_size: Option<usize>,
         extra_task_handling_routine: F,
-        host_key: String,
-        timestamp_key: String,
+        host_key: Option<OwnedValuePath>,
+        timestamp_key: Option<OwnedValuePath>,
+        source_type_key: String,
+        log_namespace: LogNamespace,
     }
 
     impl<F: Send + Sync + Clone + FnOnce() + 'static> MockFrameHandler<F> {
@@ -647,8 +653,10 @@ mod test {
                 socket_receive_buffer_size: None,
                 socket_send_buffer_size: None,
                 extra_task_handling_routine: extra_routine,
-                host_key: "test_framestream".to_string(),
-                timestamp_key: "my_timestamp".to_string(),
+                host_key: Some(owned_value_path!("test_framestream")),
+                timestamp_key: Some(owned_value_path!("my_timestamp")),
+                source_type_key: "source_type".to_string(),
+                log_namespace: LogNamespace::Legacy,
             }
         }
     }
@@ -662,15 +670,22 @@ mod test {
         }
 
         fn handle_event(&self, received_from: Option<Bytes>, frame: Bytes) -> Option<Event> {
-            let mut event = LogEvent::from(frame);
-            event.insert(log_schema().source_type_key(), "framestream");
+            let mut log_event = LogEvent::from(frame);
+
+            log_event.insert(log_schema().source_type_key(), "framestream");
             if let Some(host) = received_from {
-                event.insert(self.host_key().as_str(), host);
+                self.log_namespace.insert_source_metadata(
+                    "framestream",
+                    &mut log_event,
+                    self.host_key.as_ref().map(LegacyKey::Overwrite),
+                    path!("host"),
+                    host,
+                )
             }
 
             (self.extra_task_handling_routine.clone())();
 
-            Some(event.into())
+            Some(log_event.into())
         }
 
         fn socket_path(&self) -> PathBuf {
@@ -695,16 +710,20 @@ mod test {
             self.socket_send_buffer_size
         }
 
-        fn host_key(&self) -> String {
-            self.host_key.clone()
+        fn host_key(&self) -> &Option<OwnedValuePath> {
+            &self.host_key
         }
 
-        fn timestamp_key(&self) -> String {
-            self.timestamp_key.clone()
+        fn timestamp_key(&self) -> Option<&OwnedValuePath> {
+            self.timestamp_key.as_ref()
+        }
+
+        fn source_type_key(&self) -> &str {
+            self.source_type_key.as_str()
         }
     }
 
-    fn init_framstream_unix(
+    fn init_framestream_unix(
         source_id: &str,
         frame_handler: impl FrameHandler + Send + Sync + Clone + 'static,
         pipeline: SourceSender,
@@ -743,7 +762,7 @@ mod test {
     ) {
         let mut stream = stream::iter(frames.into_iter());
         //send and send_all consume the sink
-        let _ = sock_sink.send_all(&mut stream).await;
+        _ = sock_sink.send_all(&mut stream).await;
     }
 
     async fn send_control_frame<S: Sink<Bytes, Error = std::io::Error> + Unpin>(
@@ -763,8 +782,8 @@ mod test {
     ) -> Bytes {
         let mut frame = BytesMut::from(&header.to_u32().to_be_bytes()[..]);
         for content_type in content_types {
-            frame.extend(&ControlField::ContentType.to_u32().to_be_bytes());
-            frame.extend(&(content_type.len() as u32).to_be_bytes());
+            frame.extend(ControlField::ContentType.to_u32().to_be_bytes());
+            frame.extend((content_type.len() as u32).to_be_bytes());
             frame.extend(content_type.clone());
         }
         Bytes::from(frame)
@@ -809,7 +828,7 @@ mod test {
         let source_name = "test_source";
         let (tx, rx) = SourceSender::new_test();
         let (path, source_handle, mut shutdown) =
-            init_framstream_unix(source_name, create_frame_handler(false), tx);
+            init_framestream_unix(source_name, create_frame_handler(false), tx);
         let (mut sock_sink, mut sock_stream) = make_unix_stream(path).await.split();
 
         //1 - send READY frame (with content_type)
@@ -847,11 +866,11 @@ mod test {
             "world".into(),
         );
 
-        std::mem::drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
+        drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
 
         // Ensure source actually shut down successfully.
         signal_shutdown(source_name, &mut shutdown).await;
-        let _ = source_handle.await.unwrap();
+        _ = source_handle.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -859,7 +878,7 @@ mod test {
         let source_name = "test_source";
         let (tx, rx) = SourceSender::new_test();
         let (path, source_handle, mut shutdown) =
-            init_framstream_unix(source_name, create_frame_handler(true), tx);
+            init_framestream_unix(source_name, create_frame_handler(true), tx);
         let (mut sock_sink, mut sock_stream) = make_unix_stream(path).await.split();
 
         //1 - send READY frame (with content_type)
@@ -895,11 +914,11 @@ mod test {
             .iter()
             .any(|e| e.as_log()[&log_schema().message_key()] == "world".into()));
 
-        std::mem::drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
+        drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
 
         // Ensure source actually shut down successfully.
         signal_shutdown(source_name, &mut shutdown).await;
-        let _ = source_handle.await.unwrap();
+        _ = source_handle.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -907,7 +926,7 @@ mod test {
         let source_name = "test_source";
         let (tx, _) = SourceSender::new_test();
         let (path, source_handle, mut shutdown) =
-            init_framstream_unix(source_name, create_frame_handler(false), tx);
+            init_framestream_unix(source_name, create_frame_handler(false), tx);
         let (mut sock_sink, mut sock_stream) = make_unix_stream(path).await.split();
 
         //1 - send READY frame (with content_type)
@@ -925,11 +944,11 @@ mod test {
         assert_eq!(frame_vec[0].as_ref().unwrap().len(), 0);
         assert_accept_frame(frame_vec[1].as_mut().unwrap(), content_type);
 
-        std::mem::drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
+        drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
 
         // Ensure source actually shut down successfully.
         signal_shutdown(source_name, &mut shutdown).await;
-        let _ = source_handle.await.unwrap();
+        _ = source_handle.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -937,7 +956,7 @@ mod test {
         let source_name = "test_source";
         let (tx, _) = SourceSender::new_test();
         let (path, source_handle, mut shutdown) =
-            init_framstream_unix(source_name, create_frame_handler(false), tx);
+            init_framestream_unix(source_name, create_frame_handler(false), tx);
         let (mut sock_sink, mut sock_stream) = make_unix_stream(path).await.split();
 
         //1 - send READY frame (with WRONG content_type)
@@ -960,11 +979,11 @@ mod test {
         assert_eq!(frame_vec[0].as_ref().unwrap().len(), 0);
         assert_accept_frame(frame_vec[1].as_mut().unwrap(), content_type);
 
-        std::mem::drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
+        drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
 
         // Ensure source actually shut down successfully.
         signal_shutdown(source_name, &mut shutdown).await;
-        let _ = source_handle.await.unwrap();
+        _ = source_handle.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -972,7 +991,7 @@ mod test {
         let source_name = "test_source";
         let (tx, rx) = SourceSender::new_test();
         let (path, source_handle, mut shutdown) =
-            init_framstream_unix(source_name, create_frame_handler(false), tx);
+            init_framestream_unix(source_name, create_frame_handler(false), tx);
         let (mut sock_sink, mut sock_stream) = make_unix_stream(path).await.split();
 
         //1 - send data frame (too soon!)
@@ -1018,11 +1037,11 @@ mod test {
             "world".into(),
         );
 
-        std::mem::drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
+        drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
 
         // Ensure source actually shut down successfully.
         signal_shutdown(source_name, &mut shutdown).await;
-        let _ = source_handle.await.unwrap();
+        _ = source_handle.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1030,7 +1049,7 @@ mod test {
         let source_name = "test_source";
         let (tx, rx) = SourceSender::new_test();
         let (path, source_handle, mut shutdown) =
-            init_framstream_unix(source_name, create_frame_handler(false), tx);
+            init_framestream_unix(source_name, create_frame_handler(false), tx);
         let (mut sock_sink, _) = make_unix_stream(path).await.split();
 
         //1 - send START frame (with content_type)
@@ -1058,11 +1077,9 @@ mod test {
             "world".into(),
         );
 
-        // std::mem::drop(sock_stream); //explicitly drop the stream so we don't get warnings about not using it
-
         // Ensure source actually shut down successfully.
         signal_shutdown(source_name, &mut shutdown).await;
-        let _ = source_handle.await.unwrap();
+        _ = source_handle.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

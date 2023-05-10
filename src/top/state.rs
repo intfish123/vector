@@ -32,6 +32,8 @@ pub enum EventType {
     /// Interval + identified metric
     ProcessedBytesThroughputs(i64, Vec<IdentifiedMetric>),
     ErrorsTotals(Vec<IdentifiedMetric>),
+    #[cfg(feature = "allocation-tracing")]
+    AllocatedBytes(Vec<IdentifiedMetric>),
     ComponentAdded(ComponentRow),
     ComponentRemoved(ComponentKey),
     ConnectionUpdated(ConnectionStatus),
@@ -118,6 +120,8 @@ pub struct ComponentRow {
     pub received_events_throughput_sec: i64,
     pub sent_events_total: i64,
     pub sent_events_throughput_sec: i64,
+    #[cfg(feature = "allocation-tracing")]
+    pub allocated_bytes: i64,
     pub errors: i64,
 }
 
@@ -208,11 +212,19 @@ pub async fn updater(mut event_rx: EventRx) -> StateRx {
                         }
                     }
                 }
+                #[cfg(feature = "allocation-tracing")]
+                EventType::AllocatedBytes(rows) => {
+                    for (key, v) in rows {
+                        if let Some(r) = state.components.get_mut(&key) {
+                            r.allocated_bytes = v;
+                        }
+                    }
+                }
                 EventType::ComponentAdded(c) => {
-                    let _ = state.components.insert(c.key.clone(), c);
+                    _ = state.components.insert(c.key.clone(), c);
                 }
                 EventType::ComponentRemoved(key) => {
-                    let _ = state.components.remove(&key);
+                    _ = state.components.remove(&key);
                 }
                 EventType::ConnectionUpdated(status) => {
                     state.connection_status = status;
@@ -220,7 +232,7 @@ pub async fn updater(mut event_rx: EventRx) -> StateRx {
             }
 
             // Send updated map to listeners
-            let _ = tx.send(state.clone()).await;
+            _ = tx.send(state.clone()).await;
         }
     });
 

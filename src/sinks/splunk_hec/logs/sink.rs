@@ -2,7 +2,9 @@ use std::{fmt, num::NonZeroUsize, sync::Arc};
 
 use async_trait::async_trait;
 use futures_util::{stream::BoxStream, StreamExt};
+use serde::Serialize;
 use tower::Service;
+use vector_buffers::EventCount;
 use vector_core::{
     event::{Event, LogEvent, Value},
     partition::Partitioner,
@@ -26,7 +28,7 @@ use crate::{
     },
     template::Template,
 };
-use lookup::event_path;
+use lookup::{event_path, OwnedValuePath, PathPrefix};
 
 pub struct HecLogsSink<S> {
     pub context: SinkContext,
@@ -39,7 +41,7 @@ pub struct HecLogsSink<S> {
     pub indexed_fields: Vec<String>,
     pub host: String,
     pub timestamp_nanos_key: Option<String>,
-    pub timestamp_key: String,
+    pub timestamp_key: Option<OwnedValuePath>,
     pub endpoint_target: EndpointTarget,
 }
 
@@ -50,7 +52,7 @@ pub struct HecLogData<'a> {
     pub indexed_fields: &'a [String],
     pub host_key: &'a str,
     pub timestamp_nanos_key: Option<&'a String>,
-    pub timestamp_key: &'a str,
+    pub timestamp_key: Option<OwnedValuePath>,
     pub endpoint_target: EndpointTarget,
 }
 
@@ -71,11 +73,11 @@ where
             indexed_fields: self.indexed_fields.as_slice(),
             host_key: self.host.as_ref(),
             timestamp_nanos_key: self.timestamp_nanos_key.as_ref(),
-            timestamp_key: self.timestamp_key.as_ref(),
+            timestamp_key: self.timestamp_key.clone(),
             endpoint_target: self.endpoint_target,
         };
 
-        let sink = input
+        input
             .map(move |event| process_log(event, &data))
             .batched_partitioned(
                 if self.endpoint_target == EndpointTarget::Raw {
@@ -102,9 +104,9 @@ where
                     Ok(req) => Some(req),
                 }
             })
-            .into_driver(self.service);
-
-        sink.run().await
+            .into_driver(self.service)
+            .run()
+            .await
     }
 }
 
@@ -204,7 +206,7 @@ impl Partitioner for EventPartitioner {
     }
 }
 
-#[derive(PartialEq, Default, Clone, Debug)]
+#[derive(PartialEq, Default, Clone, Debug, Serialize)]
 pub struct HecLogsProcessedEventMetadata {
     pub event_byte_size: usize,
     pub sourcetype: Option<String>,
@@ -246,10 +248,8 @@ pub fn process_log(event: Event, data: &HecLogData) -> HecProcessedEvent {
 
     let host = log.get(data.host_key).cloned();
 
-    let timestamp = if data.timestamp_key.is_empty() {
-        None
-    } else {
-        match log.remove(data.timestamp_key) {
+    let timestamp = data.timestamp_key.as_ref().and_then(|timestamp_key| {
+        match log.remove((PathPrefix::Event, timestamp_key)) {
             Some(Value::Timestamp(ts)) => {
                 // set nanos in log if valid timestamp in event and timestamp_nanos_key is configured
                 if let Some(key) = data.timestamp_nanos_key {
@@ -268,7 +268,7 @@ pub fn process_log(event: Event, data: &HecLogData) -> HecProcessedEvent {
                 None
             }
         }
-    };
+    });
 
     let fields = data
         .indexed_fields
@@ -290,5 +290,12 @@ pub fn process_log(event: Event, data: &HecLogData) -> HecProcessedEvent {
     ProcessedEvent {
         event: log,
         metadata,
+    }
+}
+
+impl EventCount for HecProcessedEvent {
+    fn event_count(&self) -> usize {
+        // A HecProcessedEvent is mapped one-to-one with an event.
+        1
     }
 }

@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use smallvec::{smallvec, SmallVec};
-use value::kind::Collection;
-use value::Kind;
 use vector_core::{config::DataType, event::Event, schema};
+use vrl::value::kind::Collection;
+use vrl::value::Kind;
 
 use super::Deserializer;
 use vector_core::config::LogNamespace;
@@ -46,6 +46,8 @@ impl Deserializer for NativeJsonDeserializer {
     fn parse(
         &self,
         bytes: Bytes,
+        // LogNamespace is ignored because Vector owns the data format being consumed and as such there
+        // is no need to change the fields of the event.
         _log_namespace: LogNamespace,
     ) -> vector_common::Result<SmallVec<[Event; 1]>> {
         // It's common to receive empty frames when parsing NDJSON, since it

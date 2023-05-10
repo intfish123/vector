@@ -5,8 +5,10 @@ use ordered_float::NotNan;
 use snafu::{ResultExt, Snafu};
 use vector_config::configurable_component;
 
+use crate::config::OutputId;
+use crate::schema::Definition;
 use crate::{
-    config::{DataType, Input, Output},
+    config::{DataType, Input, TransformOutput},
     event::{Event, Value},
     internal_events::{LuaGcTriggered, LuaScriptError},
     schema,
@@ -29,7 +31,7 @@ pub struct LuaConfig {
 
     /// A list of directories to search when loading a Lua file via the `require` function.
     ///
-    /// If not specified, the modules are looked up in the directories of Vector’s configs.
+    /// If not specified, the modules are looked up in the configuration directories.
     #[serde(default)]
     search_dirs: Vec<String>,
 }
@@ -46,8 +48,27 @@ impl LuaConfig {
         Input::log()
     }
 
-    pub fn outputs(&self, _: &schema::Definition) -> Vec<Output> {
-        vec![Output::default(DataType::Log)]
+    pub fn outputs(
+        &self,
+        input_definitions: &[(OutputId, schema::Definition)],
+    ) -> Vec<TransformOutput> {
+        // Lua causes the type definition to be reset
+        let namespaces = input_definitions
+            .iter()
+            .flat_map(|(_output, definition)| definition.log_namespaces().clone())
+            .collect();
+
+        let definition = input_definitions
+            .iter()
+            .map(|(output, _definition)| {
+                (
+                    output.clone(),
+                    Definition::default_for_namespace(&namespaces),
+                )
+            })
+            .collect();
+
+        vec![TransformOutput::new(DataType::Log, definition)]
     }
 }
 

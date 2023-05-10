@@ -1,6 +1,8 @@
 use std::{io, io::Write};
 
-use vector_core::{event::Event, ByteSizeOf};
+use serde::Serialize;
+use vector_buffers::EventCount;
+use vector_core::{event::Event, ByteSizeOf, EstimatedJsonEncodedSizeOf};
 
 use crate::{
     codecs::Transformer,
@@ -11,6 +13,7 @@ use crate::{
     },
 };
 
+#[derive(Serialize)]
 pub struct ProcessedEvent {
     pub index: String,
     pub bulk_action: BulkAction,
@@ -27,6 +30,19 @@ impl Finalizable for ProcessedEvent {
 impl ByteSizeOf for ProcessedEvent {
     fn allocated_bytes(&self) -> usize {
         self.index.allocated_bytes() + self.log.allocated_bytes() + self.id.allocated_bytes()
+    }
+}
+
+impl EstimatedJsonEncodedSizeOf for ProcessedEvent {
+    fn estimated_json_encoded_size_of(&self) -> usize {
+        self.log.estimated_json_encoded_size_of()
+    }
+}
+
+impl EventCount for ProcessedEvent {
+    fn event_count(&self) -> usize {
+        // An Elasticsearch ProcessedEvent is mapped one-to-one with an event.
+        1
     }
 }
 
@@ -118,7 +134,7 @@ mod tests {
     fn suppress_type_with_id() {
         let mut writer = Vec::new();
 
-        let _ = write_bulk_action(
+        _ = write_bulk_action(
             &mut writer,
             "ACTION",
             "INDEX",
@@ -146,7 +162,7 @@ mod tests {
     fn suppress_type_without_id() {
         let mut writer = Vec::new();
 
-        let _ = write_bulk_action(&mut writer, "ACTION", "INDEX", "TYPE", true, &None);
+        _ = write_bulk_action(&mut writer, "ACTION", "INDEX", "TYPE", true, &None);
 
         let value: serde_json::Value = serde_json::from_slice(&writer).unwrap();
         let value = value.as_object().unwrap();
@@ -166,7 +182,7 @@ mod tests {
     fn type_with_id() {
         let mut writer = Vec::new();
 
-        let _ = write_bulk_action(
+        _ = write_bulk_action(
             &mut writer,
             "ACTION",
             "INDEX",
@@ -195,7 +211,7 @@ mod tests {
     fn type_without_id() {
         let mut writer = Vec::new();
 
-        let _ = write_bulk_action(&mut writer, "ACTION", "INDEX", "TYPE", false, &None);
+        _ = write_bulk_action(&mut writer, "ACTION", "INDEX", "TYPE", false, &None);
 
         let value: serde_json::Value = serde_json::from_slice(&writer).unwrap();
         let value = value.as_object().unwrap();

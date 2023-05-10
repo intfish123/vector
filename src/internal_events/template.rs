@@ -1,9 +1,6 @@
-use crate::{
-    emit,
-    internal_events::{ComponentEventsDropped, UNINTENTIONAL},
-};
+use crate::emit;
 use metrics::counter;
-use vector_core::internal_event::InternalEvent;
+use vector_core::internal_event::{ComponentEventsDropped, InternalEvent, UNINTENTIONAL};
 
 use vector_common::internal_event::{error_stage, error_type};
 
@@ -18,7 +15,7 @@ impl<'a> InternalEvent for TemplateRenderingError<'a> {
         let mut msg = "Failed to render template".to_owned();
         if let Some(field) = self.field {
             use std::fmt::Write;
-            let _ = write!(msg, " for \"{}\"", field);
+            _ = write!(msg, " for \"{}\"", field);
         }
         msg.push('.');
 

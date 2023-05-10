@@ -1,9 +1,13 @@
 use vector_common::internal_event::{Count, InternalEventHandle as _, Registered};
 use vector_config::configurable_component;
+use vector_core::config::{clone_input_definitions, LogNamespace};
 
 use crate::{
     conditions::{AnyCondition, Condition},
-    config::{DataType, GenerateConfig, Input, Output, TransformConfig, TransformContext},
+    config::{
+        DataType, GenerateConfig, Input, OutputId, TransformConfig, TransformContext,
+        TransformOutput,
+    },
     event::Event,
     internal_events::FilterEventsDropped,
     schema,
@@ -11,11 +15,14 @@ use crate::{
 };
 
 /// Configuration for the `filter` transform.
-#[configurable_component(transform("filter"))]
+#[configurable_component(transform("filter", "Filter events based on a set of conditions."))]
 #[derive(Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct FilterConfig {
     #[configurable(derived)]
+    /// The condition that every input event is matched against.
+    ///
+    /// If an event is matched by the condition, it is forwarded. Otherwise, the event is dropped.
     condition: AnyCondition,
 }
 
@@ -27,15 +34,12 @@ impl From<AnyCondition> for FilterConfig {
 
 impl GenerateConfig for FilterConfig {
     fn generate_config() -> toml::Value {
-        toml::from_str(
-            r#"condition.type = "check_fields"
-            condition."message.eq" = "value""#,
-        )
-        .unwrap()
+        toml::from_str(r#"condition = ".message = \"value\"""#).unwrap()
     }
 }
 
 #[async_trait::async_trait]
+#[typetag::serde(name = "filter")]
 impl TransformConfig for FilterConfig {
     async fn build(&self, context: &TransformContext) -> crate::Result<Transform> {
         Ok(Transform::function(Filter::new(
@@ -47,8 +51,16 @@ impl TransformConfig for FilterConfig {
         Input::all()
     }
 
-    fn outputs(&self, _: &schema::Definition) -> Vec<Output> {
-        vec![Output::default(DataType::all())]
+    fn outputs(
+        &self,
+        _enrichment_tables: enrichment::TableRegistry,
+        input_definitions: &[(OutputId, schema::Definition)],
+        _: LogNamespace,
+    ) -> Vec<TransformOutput> {
+        vec![TransformOutput::new(
+            DataType::all(),
+            clone_input_definitions(input_definitions),
+        )]
     }
 
     fn enable_concurrency(&self) -> bool {
