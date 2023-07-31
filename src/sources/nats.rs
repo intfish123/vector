@@ -238,8 +238,8 @@ async fn nats_source(
                         event
                     });
 
-                    out.send_batch(events).await.map_err(|error| {
-                        emit!(StreamClosedError { error, count });
+                    out.send_batch(events).await.map_err(|_| {
+                        emit!(StreamClosedError { count });
                     })?;
                 }
                 Err(error) => {
@@ -390,7 +390,10 @@ mod integration_tests {
         .await;
 
         println!("Received event  {:?}", events[0].as_log());
-        assert_eq!(events[0].as_log()[log_schema().message_key()], msg.into());
+        assert_eq!(
+            events[0].as_log()[log_schema().message_key().unwrap().to_string()],
+            msg.into()
+        );
         Ok(())
     }
 

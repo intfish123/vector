@@ -40,7 +40,7 @@ use vrl::value::Kind;
 pub const DATA_STREAM_TIMESTAMP_KEY: &str = "@timestamp";
 
 /// Configuration for the `elasticsearch` sink.
-#[configurable_component(sink("elasticsearch"))]
+#[configurable_component(sink("elasticsearch", "Index observability events in Elasticsearch."))]
 #[derive(Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ElasticsearchConfig {
@@ -355,15 +355,12 @@ impl DataStreamConfig {
 
     /// If there is a `timestamp` field, rename it to the expected `@timestamp` for Elastic Common Schema.
     pub fn remap_timestamp(&self, log: &mut LogEvent) {
-        if let Some(timestamp_key) = log.timestamp_path() {
-            if timestamp_key == DATA_STREAM_TIMESTAMP_KEY {
+        if let Some(timestamp_key) = log.timestamp_path().cloned() {
+            if timestamp_key.to_string() == DATA_STREAM_TIMESTAMP_KEY {
                 return;
             }
 
-            log.rename_key(
-                timestamp_key.as_str(),
-                event_path!(DATA_STREAM_TIMESTAMP_KEY),
-            )
+            log.rename_key(&timestamp_key, event_path!(DATA_STREAM_TIMESTAMP_KEY));
         }
     }
 
@@ -466,6 +463,7 @@ impl DataStreamConfig {
 }
 
 #[async_trait::async_trait]
+#[typetag::serde(name = "elasticsearch")]
 impl SinkConfig for ElasticsearchConfig {
     async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
         let commons = ElasticsearchCommon::parse_many(self, cx.proxy()).await?;

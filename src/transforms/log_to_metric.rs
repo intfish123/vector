@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::{collections::HashMap, num::ParseFloatError};
 
 use chrono::Utc;
@@ -5,6 +6,7 @@ use indexmap::IndexMap;
 use vector_config::configurable_component;
 use vector_core::config::LogNamespace;
 
+use crate::config::schema::Definition;
 use crate::{
     config::{
         DataType, GenerateConfig, Input, OutputId, TransformConfig, TransformContext,
@@ -256,7 +258,10 @@ fn to_metric(config: &MetricConfig, event: &Event) -> Result<Metric, TransformEr
         .and_then(Value::as_timestamp)
         .cloned()
         .or_else(|| Some(Utc::now()));
-    let metadata = event.metadata().clone();
+    let metadata = event
+        .metadata()
+        .clone()
+        .with_schema_definition(&Arc::new(Definition::any()));
 
     let field = config.field();
 
@@ -403,13 +408,6 @@ impl FunctionTransform for LogToMetric {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{offset::TimeZone, DateTime, Timelike, Utc};
-    use lookup::PathPrefix;
-    use std::time::Duration;
-    use tokio::sync::mpsc;
-    use tokio_stream::wrappers::ReceiverStream;
-    use vector_core::metric_tags;
-
     use super::*;
     use crate::test_util::components::assert_transform_compliance;
     use crate::transforms::test::create_topology;
@@ -420,6 +418,13 @@ mod tests {
             Event, LogEvent,
         },
     };
+    use chrono::{offset::TimeZone, DateTime, Timelike, Utc};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+    use vector_common::config::ComponentKey;
+    use vector_core::metric_tags;
 
     #[test]
     fn generate_config() {
@@ -444,10 +449,8 @@ mod tests {
     fn create_event(key: &str, value: impl Into<Value> + std::fmt::Debug) -> Event {
         let mut log = Event::Log(LogEvent::from("i am a log"));
         log.as_mut_log().insert(key, value);
-        log.as_mut_log().insert(
-            (PathPrefix::Event, log_schema().timestamp_key().unwrap()),
-            ts(),
-        );
+        log.as_mut_log()
+            .insert(log_schema().timestamp_key_target_path().unwrap(), ts());
         log
     }
 
@@ -506,7 +509,11 @@ mod tests {
         );
 
         let event = create_event("status", "42");
-        let metadata = event.metadata().clone();
+        let mut metadata = event.metadata().clone();
+        // definitions aren't valid for metrics yet, it's just set to the default (anything).
+        metadata.set_schema_definition(&Arc::new(Definition::any()));
+        metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
+        metadata.set_source_id(Arc::new(ComponentKey::from("in")));
         let metric = do_transform(config, event).await.unwrap();
 
         assert_eq!(
@@ -537,7 +544,11 @@ mod tests {
         let mut event = create_event("message", "i am log");
         event.as_mut_log().insert("method", "post");
         event.as_mut_log().insert("code", "200");
-        let metadata = event.metadata().clone();
+        let mut metadata = event.metadata().clone();
+        // definitions aren't valid for metrics yet, it's just set to the default (anything).
+        metadata.set_schema_definition(&Arc::new(Definition::any()));
+        metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
+        metadata.set_source_id(Arc::new(ComponentKey::from("in")));
 
         let metric = do_transform(config, event).await.unwrap();
 
@@ -625,7 +636,12 @@ mod tests {
         );
 
         let event = create_event("backtrace", "message");
-        let metadata = event.metadata().clone();
+        let mut metadata = event.metadata().clone();
+        // definitions aren't valid for metrics yet, it's just set to the default (anything).
+        metadata.set_schema_definition(&Arc::new(Definition::any()));
+        metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
+        metadata.set_source_id(Arc::new(ComponentKey::from("in")));
+
         let metric = do_transform(config, event).await.unwrap();
 
         assert_eq!(
@@ -668,7 +684,11 @@ mod tests {
         );
 
         let event = create_event("amount", "33.99");
-        let metadata = event.metadata().clone();
+        let mut metadata = event.metadata().clone();
+        // definitions aren't valid for metrics yet, it's just set to the default (anything).
+        metadata.set_schema_definition(&Arc::new(Definition::any()));
+        metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
+        metadata.set_source_id(Arc::new(ComponentKey::from("in")));
         let metric = do_transform(config, event).await.unwrap();
 
         assert_eq!(
@@ -697,7 +717,12 @@ mod tests {
         );
 
         let event = create_event("amount", "33.99");
-        let metadata = event.metadata().clone();
+        let mut metadata = event.metadata().clone();
+        // definitions aren't valid for metrics yet, it's just set to the default (anything).
+        metadata.set_schema_definition(&Arc::new(Definition::any()));
+        metadata.set_source_id(Arc::new(ComponentKey::from("in")));
+        metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
+
         let metric = do_transform(config, event).await.unwrap();
 
         assert_eq!(
@@ -724,7 +749,14 @@ mod tests {
         );
 
         let event = create_event("memory_rss", "123");
-        let metadata = event.metadata().clone();
+        let mut metadata = event.metadata().clone();
+
+        // definitions aren't valid for metrics yet, it's just set to the default (anything).
+        metadata.set_schema_definition(&Arc::new(Definition::any()));
+
+        metadata.set_source_id(Arc::new(ComponentKey::from("in")));
+        metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
+
         let metric = do_transform(config, event).await.unwrap();
 
         assert_eq!(
@@ -801,13 +833,18 @@ mod tests {
         );
 
         let mut event = Event::Log(LogEvent::from("i am a log"));
-        event.as_mut_log().insert(
-            (PathPrefix::Event, log_schema().timestamp_key().unwrap()),
-            ts(),
-        );
+        event
+            .as_mut_log()
+            .insert(log_schema().timestamp_key_target_path().unwrap(), ts());
         event.as_mut_log().insert("status", "42");
         event.as_mut_log().insert("backtrace", "message");
-        let metadata = event.metadata().clone();
+        let mut metadata = event.metadata().clone();
+
+        // definitions aren't valid for metrics yet, it's just set to the default (anything).
+        metadata.set_schema_definition(&Arc::new(Definition::any()));
+        metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
+        metadata.set_source_id(Arc::new(ComponentKey::from("in")));
+
         let output = do_transform_multiple_events(config, event, 2).await;
 
         assert_eq!(2, output.len());
@@ -851,16 +888,20 @@ mod tests {
         );
 
         let mut event = Event::Log(LogEvent::from("i am a log"));
-        event.as_mut_log().insert(
-            (PathPrefix::Event, log_schema().timestamp_key().unwrap()),
-            ts(),
-        );
+        event
+            .as_mut_log()
+            .insert(log_schema().timestamp_key_target_path().unwrap(), ts());
         event.as_mut_log().insert("status", "42");
         event.as_mut_log().insert("backtrace", "message");
         event.as_mut_log().insert("host", "local");
         event.as_mut_log().insert("worker", "abc");
         event.as_mut_log().insert("service", "xyz");
-        let metadata = event.metadata().clone();
+        let mut metadata = event.metadata().clone();
+
+        // definitions aren't valid for metrics yet, it's just set to the default (anything).
+        metadata.set_schema_definition(&Arc::new(Definition::any()));
+        metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
+        metadata.set_source_id(Arc::new(ComponentKey::from("in")));
 
         let output = do_transform_multiple_events(config, event, 2).await;
 
@@ -902,7 +943,12 @@ mod tests {
         );
 
         let event = create_event("user_ip", "1.2.3.4");
-        let metadata = event.metadata().clone();
+        let mut metadata = event.metadata().clone();
+        // definitions aren't valid for metrics yet, it's just set to the default (anything).
+        metadata.set_schema_definition(&Arc::new(Definition::any()));
+        metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
+        metadata.set_source_id(Arc::new(ComponentKey::from("in")));
+
         let metric = do_transform(config, event).await.unwrap();
 
         assert_eq!(
@@ -930,7 +976,13 @@ mod tests {
         );
 
         let event = create_event("response_time", "2.5");
-        let metadata = event.metadata().clone();
+        let mut metadata = event.metadata().clone();
+
+        // definitions aren't valid for metrics yet, it's just set to the default (anything).
+        metadata.set_schema_definition(&Arc::new(Definition::any()));
+        metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
+        metadata.set_source_id(Arc::new(ComponentKey::from("in")));
+
         let metric = do_transform(config, event).await.unwrap();
 
         assert_eq!(
@@ -959,7 +1011,12 @@ mod tests {
         );
 
         let event = create_event("response_time", "2.5");
-        let metadata = event.metadata().clone();
+        let mut metadata = event.metadata().clone();
+        // definitions aren't valid for metrics yet, it's just set to the default (anything).
+        metadata.set_schema_definition(&Arc::new(Definition::any()));
+        metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
+        metadata.set_source_id(Arc::new(ComponentKey::from("in")));
+
         let metric = do_transform(config, event).await.unwrap();
 
         assert_eq!(

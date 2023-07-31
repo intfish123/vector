@@ -23,6 +23,7 @@ use tokio_util::codec::FramedRead;
 use vector_common::internal_event::{ByteSize, BytesReceived, InternalEventHandle as _, Protocol};
 use vector_config::configurable_component;
 use vector_core::{config::LegacyKey, EstimatedJsonEncodedSizeOf};
+use vrl::path::OwnedValuePath;
 use vrl::value::Kind;
 
 use crate::{
@@ -56,7 +57,7 @@ pub struct ExecConfig {
     #[configurable(derived)]
     pub streaming: Option<StreamingConfig>,
 
-    /// The command to be run, plus any arguments required.
+    /// The command to run, plus any arguments required.
     #[configurable(metadata(docs::examples = "echo", docs::examples = "Hello World!"))]
     pub command: Vec<String>,
 
@@ -119,6 +120,7 @@ pub struct StreamingConfig {
 
     /// The amount of time, in seconds, before rerunning a streaming command that exited.
     #[serde(default = "default_respawn_interval_secs")]
+    #[configurable(metadata(docs::human_name = "Respawn Interval"))]
     respawn_interval_secs: u64,
 }
 
@@ -275,9 +277,11 @@ impl SourceConfig for ExecConfig {
             .with_standard_vector_source_metadata()
             .with_source_metadata(
                 Self::NAME,
-                Some(LegacyKey::InsertIfEmpty(owned_value_path!(
-                    log_schema().host_key()
-                ))),
+                Some(LegacyKey::InsertIfEmpty(
+                    log_schema()
+                        .host_key()
+                        .map_or(OwnedValuePath::root(), |key| key.clone()),
+                )),
                 &owned_value_path!("host"),
                 Kind::bytes().or_undefined(),
                 Some("host"),
@@ -497,8 +501,8 @@ async fn run_command(
                         for event in &mut events {
                             handle_event(&config, &hostname, &Some(stream.to_string()), pid, event, log_namespace);
                         }
-                        if let Err(error) = out.send_batch(events).await {
-                            emit!(StreamClosedError { count, error });
+                        if (out.send_batch(events).await).is_err() {
+                            emit!(StreamClosedError { count });
                             break;
                         }
                     },
@@ -665,7 +669,7 @@ fn handle_event(
             log_namespace.insert_source_metadata(
                 ExecConfig::NAME,
                 log,
-                Some(LegacyKey::InsertIfEmpty(path!(log_schema().host_key()))),
+                log_schema().host_key().map(LegacyKey::InsertIfEmpty),
                 path!("host"),
                 hostname.clone(),
             );
@@ -722,7 +726,7 @@ mod tests {
     use bytes::Bytes;
     use std::io::Cursor;
     use vector_core::event::EventMetadata;
-    use vrl::value::value;
+    use vrl::value;
 
     #[cfg(unix)]
     use futures::task::Poll;
@@ -755,12 +759,21 @@ mod tests {
         );
         let log = event.as_log();
 
-        assert_eq!(log[log_schema().host_key()], "Some.Machine".into());
+        assert_eq!(
+            log[log_schema().host_key().unwrap().to_string().as_str()],
+            "Some.Machine".into()
+        );
         assert_eq!(log[STREAM_KEY], STDOUT.into());
         assert_eq!(log[PID_KEY], (8888_i64).into());
         assert_eq!(log[COMMAND_KEY], config.command.into());
-        assert_eq!(log[log_schema().message_key()], "hello world".into());
-        assert_eq!(log[log_schema().source_type_key()], "exec".into());
+        assert_eq!(
+            log[log_schema().message_key().unwrap().to_string()],
+            "hello world".into()
+        );
+        assert_eq!(
+            log[log_schema().source_type_key().unwrap().to_string()],
+            "exec".into()
+        );
         assert!(log
             .get((
                 lookup::PathPrefix::Event,
@@ -836,12 +849,21 @@ mod tests {
         );
         let log = event.as_log();
 
-        assert_eq!(log[log_schema().host_key()], "Some.Machine".into());
+        assert_eq!(
+            log[log_schema().host_key().unwrap().to_string().as_str()],
+            "Some.Machine".into()
+        );
         assert_eq!(log[STREAM_KEY], STDOUT.into());
         assert_eq!(log[PID_KEY], (8888_i64).into());
         assert_eq!(log[COMMAND_KEY], config.command.into());
-        assert_eq!(log[log_schema().message_key()], "hello world".into());
-        assert_eq!(log[log_schema().source_type_key()], "exec".into());
+        assert_eq!(
+            log[log_schema().message_key().unwrap().to_string()],
+            "hello world".into()
+        );
+        assert_eq!(
+            log[log_schema().source_type_key().unwrap().to_string()],
+            "exec".into()
+        );
         assert!(log
             .get((
                 lookup::PathPrefix::Event,
@@ -948,7 +970,7 @@ mod tests {
             assert_eq!(events.len(), 1);
             let log = events[0].as_log();
             assert_eq!(
-                log[log_schema().message_key()],
+                log[log_schema().message_key().unwrap().to_string()],
                 Bytes::from("hello world").into()
             );
             assert_eq!(origin, STDOUT);
@@ -960,7 +982,7 @@ mod tests {
             assert_eq!(events.len(), 1);
             let log = events[0].as_log();
             assert_eq!(
-                log[log_schema().message_key()],
+                log[log_schema().message_key().unwrap().to_string()],
                 Bytes::from("hello rocket 🚀").into()
             );
             assert_eq!(origin, STDOUT);
@@ -1040,9 +1062,18 @@ mod tests {
             let log = event.as_log();
             assert_eq!(log[COMMAND_KEY], config.command.clone().into());
             assert_eq!(log[STREAM_KEY], STDOUT.into());
-            assert_eq!(log[log_schema().source_type_key()], "exec".into());
-            assert_eq!(log[log_schema().message_key()], "Hello World!".into());
-            assert_eq!(log[log_schema().host_key()], "Some.Machine".into());
+            assert_eq!(
+                log[log_schema().source_type_key().unwrap().to_string()],
+                "exec".into()
+            );
+            assert_eq!(
+                log[log_schema().message_key().unwrap().to_string()],
+                "Hello World!".into()
+            );
+            assert_eq!(
+                log[log_schema().host_key().unwrap().to_string().as_str()],
+                "Some.Machine".into()
+            );
             assert!(log.get(PID_KEY).is_some());
             assert!(log
                 .get((
@@ -1100,14 +1131,20 @@ mod tests {
 
         if let Poll::Ready(Some(event)) = futures::poll!(rx.next()) {
             let log = event.as_log();
-            assert_eq!(log[log_schema().message_key()], "signal received".into());
+            assert_eq!(
+                log[log_schema().message_key().unwrap().to_string()],
+                "signal received".into()
+            );
         } else {
             panic!("Expected to receive event");
         }
 
         if let Poll::Ready(Some(event)) = futures::poll!(rx.next()) {
             let log = event.as_log();
-            assert_eq!(log[log_schema().message_key()], "slept".into());
+            assert_eq!(
+                log[log_schema().message_key().unwrap().to_string()],
+                "slept".into()
+            );
         } else {
             panic!("Expected to receive event");
         }

@@ -21,10 +21,7 @@ use k8s_paths_provider::K8sPathsProvider;
 use kube::{
     api::Api,
     config::{self, KubeConfigOptions},
-    runtime::{
-        reflector::{self},
-        watcher, WatchStreamExt,
-    },
+    runtime::{reflector, watcher, WatchStreamExt},
     Client, Config as ClientConfig,
 };
 use lifecycle::Lifecycle;
@@ -143,6 +140,7 @@ pub struct Config {
     /// By default, the global `data_dir` option is used. Make sure the running user has write
     /// permissions to this directory.
     #[configurable(metadata(docs::examples = "/var/local/lib/vector/"))]
+    #[configurable(metadata(docs::human_name = "Data Directory"))]
     data_dir: Option<PathBuf>,
 
     #[configurable(derived)]
@@ -167,6 +165,7 @@ pub struct Config {
     #[serde(default)]
     #[configurable(metadata(docs::type_unit = "seconds"))]
     #[configurable(metadata(docs::examples = 600))]
+    #[configurable(metadata(docs::human_name = "Ignore Files Older Than"))]
     ignore_older_secs: Option<u64>,
 
     /// Max amount of bytes to read from a single file before switching over
@@ -198,6 +197,7 @@ pub struct Config {
     /// in the underlying file server, so setting it too low may introduce
     /// a significant overhead.
     #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
+    #[configurable(metadata(docs::human_name = "Glob Minimum Cooldown"))]
     glob_minimum_cooldown_ms: Duration,
 
     /// Overrides the name of the log field used to add the ingestion timestamp to each event.
@@ -229,6 +229,7 @@ pub struct Config {
     /// removed. If relevant metadata has been removed, the log is forwarded un-enriched and a
     /// warning is emitted.
     #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
+    #[configurable(metadata(docs::human_name = "Delay Deletion"))]
     delay_deletion_ms: Duration,
 
     /// The namespace to use for logs. This overrides the global setting.
@@ -867,8 +868,7 @@ impl Source {
             .map(|result| {
                 match result {
                     Ok(Ok(())) => info!(message = "Event processing loop completed gracefully."),
-                    Ok(Err(error)) => emit!(StreamClosedError {
-                        error,
+                    Ok(Err(_)) => emit!(StreamClosedError {
                         count: events_count
                     }),
                     Err(error) => emit!(KubernetesLifecycleError {
@@ -897,7 +897,7 @@ fn create_event(
     ingestion_timestamp_field: Option<&OwnedTargetPath>,
     log_namespace: LogNamespace,
 ) -> Event {
-    let deserializer = BytesDeserializer::new();
+    let deserializer = BytesDeserializer;
     let mut log = deserializer.parse_single(line, log_namespace);
 
     log_namespace.insert_source_metadata(
@@ -910,7 +910,7 @@ fn create_event(
 
     log_namespace.insert_vector_metadata(
         &mut log,
-        Some(log_schema().source_type_key()),
+        log_schema().source_type_key(),
         path!("source_type"),
         Bytes::from(Config::NAME),
     );

@@ -278,7 +278,7 @@ fn populate_event(
 
     log_namespace.insert_vector_metadata(
         log,
-        Some(log_schema().source_type_key()),
+        log_schema().source_type_key(),
         path!("source_type"),
         Bytes::from_static(AmqpSourceConfig::NAME.as_bytes()),
     );
@@ -392,8 +392,8 @@ async fn finalize_event_stream(
             let mut stream = stream.map(|event| event.with_batch_notifier(&batch));
 
             match out.send_event_stream(&mut stream).await {
-                Err(error) => {
-                    emit!(StreamClosedError { error, count: 1 });
+                Err(_) => {
+                    emit!(StreamClosedError { count: 1 });
                 }
                 Ok(_) => {
                     finalizer.add(msg.into(), receiver);
@@ -401,8 +401,8 @@ async fn finalize_event_stream(
             }
         }
         None => match out.send_event_stream(&mut stream).await {
-            Err(error) => {
-                emit!(StreamClosedError { error, count: 1 });
+            Err(_) => {
+                emit!(StreamClosedError { count: 1 });
             }
             Ok(_) => {
                 let ack_options = lapin::options::BasicAckOptions::default();
@@ -711,9 +711,15 @@ mod integration_test {
 
         let log = events[0].as_log();
         trace!("{:?}", log);
-        assert_eq!(log[log_schema().message_key()], "my message".into());
+        assert_eq!(
+            log[log_schema().message_key().unwrap().to_string()],
+            "my message".into()
+        );
         assert_eq!(log["routing"], routing_key.into());
-        assert_eq!(log[log_schema().source_type_key()], "amqp".into());
+        assert_eq!(
+            log[log_schema().source_type_key().unwrap().to_string()],
+            "amqp".into()
+        );
         let log_ts = log[log_schema().timestamp_key().unwrap().to_string()]
             .as_timestamp()
             .unwrap();

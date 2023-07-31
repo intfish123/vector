@@ -256,7 +256,7 @@ impl InputHandler {
                         if let Event::Log(ref mut log) = event {
                             self.log_namespace.insert_vector_metadata(
                                 log,
-                                Some(log_schema().source_type_key()),
+                                log_schema().source_type_key(),
                                 path!("source_type"),
                                 Bytes::from(RedisSourceConfig::NAME),
                             );
@@ -279,8 +279,8 @@ impl InputHandler {
                         event
                     });
 
-                    if let Err(error) = self.cx.out.send_batch(events).await {
-                        emit!(StreamClosedError { error, count });
+                    if (self.cx.out.send_batch(events).await).is_err() {
+                        emit!(StreamClosedError { count });
                         return Err(());
                     }
                 }
@@ -321,7 +321,7 @@ mod integration_test {
         },
         SourceSender,
     };
-    use vrl::value::value;
+    use vrl::value;
 
     const REDIS_SERVER: &str = "redis://redis:6379/0";
 
@@ -354,9 +354,18 @@ mod integration_test {
 
         let events = run_and_assert_source_compliance_n(config, 3, &SOURCE_TAGS).await;
 
-        assert_eq!(events[0].as_log()[log_schema().message_key()], "3".into());
-        assert_eq!(events[1].as_log()[log_schema().message_key()], "2".into());
-        assert_eq!(events[2].as_log()[log_schema().message_key()], "1".into());
+        assert_eq!(
+            events[0].as_log()[log_schema().message_key().unwrap().to_string()],
+            "3".into()
+        );
+        assert_eq!(
+            events[1].as_log()[log_schema().message_key().unwrap().to_string()],
+            "2".into()
+        );
+        assert_eq!(
+            events[2].as_log()[log_schema().message_key().unwrap().to_string()],
+            "1".into()
+        );
     }
 
     #[tokio::test]
@@ -427,9 +436,18 @@ mod integration_test {
 
         let events = run_and_assert_source_compliance_n(config, 3, &SOURCE_TAGS).await;
 
-        assert_eq!(events[0].as_log()[log_schema().message_key()], "1".into());
-        assert_eq!(events[1].as_log()[log_schema().message_key()], "2".into());
-        assert_eq!(events[2].as_log()[log_schema().message_key()], "3".into());
+        assert_eq!(
+            events[0].as_log()[log_schema().message_key().unwrap().to_string()],
+            "1".into()
+        );
+        assert_eq!(
+            events[1].as_log()[log_schema().message_key().unwrap().to_string()],
+            "2".into()
+        );
+        assert_eq!(
+            events[2].as_log()[log_schema().message_key().unwrap().to_string()],
+            "3".into()
+        );
     }
 
     #[tokio::test]
@@ -480,9 +498,12 @@ mod integration_test {
         assert_eq!(events.len(), 10000);
 
         for event in events {
-            assert_eq!(event.as_log()[log_schema().message_key()], text.into());
             assert_eq!(
-                event.as_log()[log_schema().source_type_key()],
+                event.as_log()[log_schema().message_key().unwrap().to_string()],
+                text.into()
+            );
+            assert_eq!(
+                event.as_log()[log_schema().source_type_key().unwrap().to_string()],
                 RedisSourceConfig::NAME.into()
             );
         }

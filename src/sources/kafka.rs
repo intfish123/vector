@@ -23,6 +23,7 @@ use rdkafka::{
 use serde_with::serde_as;
 use snafu::{ResultExt, Snafu};
 use tokio_util::codec::FramedRead;
+use vrl::path::PathPrefix;
 
 use vector_common::finalizer::OrderedFinalizer;
 use vector_config::configurable_component;
@@ -107,6 +108,7 @@ pub struct KafkaSourceConfig {
     #[configurable(metadata(docs::examples = 5000, docs::examples = 10000))]
     #[configurable(metadata(docs::advanced))]
     #[serde(default = "default_session_timeout_ms")]
+    #[configurable(metadata(docs::human_name = "Session Timeout"))]
     session_timeout_ms: Duration,
 
     /// Timeout for network requests.
@@ -114,6 +116,7 @@ pub struct KafkaSourceConfig {
     #[configurable(metadata(docs::examples = 30000, docs::examples = 60000))]
     #[configurable(metadata(docs::advanced))]
     #[serde(default = "default_socket_timeout_ms")]
+    #[configurable(metadata(docs::human_name = "Socket Timeout"))]
     socket_timeout_ms: Duration,
 
     /// Maximum time the broker may wait to fill the response.
@@ -121,12 +124,14 @@ pub struct KafkaSourceConfig {
     #[configurable(metadata(docs::examples = 50, docs::examples = 100))]
     #[configurable(metadata(docs::advanced))]
     #[serde(default = "default_fetch_wait_max_ms")]
+    #[configurable(metadata(docs::human_name = "Max Fetch Wait Time"))]
     fetch_wait_max_ms: Duration,
 
     /// The frequency that the consumer offsets are committed (written) to offset storage.
     #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
     #[serde(default = "default_commit_interval_ms")]
     #[configurable(metadata(docs::examples = 5000, docs::examples = 10000))]
+    #[configurable(metadata(docs::human_name = "Commit Interval"))]
     commit_interval_ms: Duration,
 
     /// Overrides the name of the log field used to add the message key to each event.
@@ -392,6 +397,7 @@ async fn kafka_source(
 
     loop {
         tokio::select! {
+            biased;
             _ = &mut shutdown => break,
             entry = ack_stream.next() => if let Some((status, entry)) = entry {
                 if status == BatchStatus::Delivered {
@@ -444,8 +450,8 @@ async fn parse_message(
                 let (batch, receiver) = BatchNotifier::new_with_receiver();
                 let mut stream = stream.map(|event| event.with_batch_notifier(&batch));
                 match out.send_event_stream(&mut stream).await {
-                    Err(error) => {
-                        emit!(StreamClosedError { error, count });
+                    Err(_) => {
+                        emit!(StreamClosedError { count });
                     }
                     Ok(_) => {
                         // Drop stream to avoid borrowing `msg`: "[...] borrow might be used
@@ -456,8 +462,8 @@ async fn parse_message(
                 }
             }
             None => match out.send_event_stream(&mut stream).await {
-                Err(error) => {
-                    emit!(StreamClosedError { error, count });
+                Err(_) => {
+                    emit!(StreamClosedError { count });
                 }
                 Ok(_) => {
                     if let Err(error) =
@@ -597,7 +603,12 @@ impl ReceivedMessage {
                     );
                 }
                 LogNamespace::Legacy => {
-                    log.insert(log_schema().source_type_key(), KafkaSourceConfig::NAME);
+                    if let Some(source_type_key) = log_schema().source_type_key() {
+                        log.insert(
+                            (PathPrefix::Event, source_type_key),
+                            KafkaSourceConfig::NAME,
+                        );
+                    }
                 }
             }
 
@@ -912,7 +923,7 @@ mod integration_test {
     use tokio::time::sleep;
     use vector_buffers::topology::channel::BufferReceiver;
     use vector_core::event::EventStatus;
-    use vrl::value::value;
+    use vrl::value;
 
     use super::{test::*, *};
     use crate::{
@@ -1041,7 +1052,7 @@ mod integration_test {
         for (i, event) in events.into_iter().enumerate() {
             if let LogNamespace::Legacy = log_namespace {
                 assert_eq!(
-                    event.as_log()[log_schema().message_key()],
+                    event.as_log()[log_schema().message_key().unwrap().to_string()],
                     format!("{} {:03}", TEXT, i).into()
                 );
                 assert_eq!(
@@ -1049,7 +1060,7 @@ mod integration_test {
                     format!("{} {}", KEY, i).into()
                 );
                 assert_eq!(
-                    event.as_log()[log_schema().source_type_key()],
+                    event.as_log()[log_schema().source_type_key().unwrap().to_string()],
                     "kafka".into()
                 );
                 assert_eq!(
@@ -1116,7 +1127,7 @@ mod integration_test {
         delay: Duration,
         status: EventStatus,
     ) -> (SourceSender, impl Stream<Item = EventArray> + Unpin) {
-        let (pipe, recv) = SourceSender::new_with_buffer(100);
+        let (pipe, recv) = SourceSender::new_test_sender_with_buffer(100);
         let recv = BufferReceiver::new(recv.into()).into_stream();
         let recv = recv.then(move |mut events| async move {
             events.iter_logs_mut().for_each(|log| {

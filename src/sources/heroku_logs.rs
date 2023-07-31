@@ -95,9 +95,10 @@ impl LogplexConfig {
             )
             .with_source_metadata(
                 LogplexConfig::NAME,
-                Some(LegacyKey::InsertIfEmpty(owned_value_path!(
-                    log_schema().host_key()
-                ))),
+                log_schema()
+                    .host_key()
+                    .cloned()
+                    .map(LegacyKey::InsertIfEmpty),
                 &owned_value_path!("host"),
                 Kind::bytes(),
                 Some("host"),
@@ -107,7 +108,7 @@ impl LogplexConfig {
                 Some(LegacyKey::InsertIfEmpty(owned_value_path!("app_name"))),
                 &owned_value_path!("app_name"),
                 Kind::bytes(),
-                None,
+                Some("service"),
             )
             .with_source_metadata(
                 LogplexConfig::NAME,
@@ -324,7 +325,7 @@ fn line_to_events(
         let mut buffer = BytesMut::new();
         buffer.put(message.as_bytes());
 
-        let legacy_host_key = parse_value_path(log_schema().host_key()).ok();
+        let legacy_host_key = log_schema().host_key().cloned();
         let legacy_app_key = parse_value_path("app_name").ok();
         let legacy_proc_key = parse_value_path("proc_id").ok();
 
@@ -520,7 +521,7 @@ mod tests {
             let log = event.as_log();
 
             assert_eq!(
-                log[log_schema().message_key()],
+                log[log_schema().message_key().unwrap().to_string()],
                 r#"at=info method=GET path="/cart_link" host=lumberjack-store.timber.io request_id=05726858-c44e-4f94-9a20-37df73be9006 fwd="73.75.38.87" dyno=web.1 connect=1ms service=22ms status=304 bytes=656 protocol=http"#.into()
             );
             assert_eq!(
@@ -530,8 +531,8 @@ mod tests {
                     .unwrap()
                     .into()
             );
-            assert_eq!(log[&log_schema().host_key()], "host".into());
-            assert_eq!(log[log_schema().source_type_key()], "heroku_logs".into());
+            assert_eq!(log[log_schema().host_key().unwrap().to_string()], "host".into());
+            assert_eq!(log[log_schema().source_type_key().unwrap().to_string()], "heroku_logs".into());
             assert_eq!(log["appname"], "lumberjack-store".into());
             assert_eq!(log["absent"], Value::Null);
         }).await;
@@ -605,7 +606,10 @@ mod tests {
         let events = super::line_to_events(Default::default(), log_namespace, body.into());
         let log = events[0].as_log();
 
-        assert_eq!(log[log_schema().message_key()], "foo bar baz".into());
+        assert_eq!(
+            log[log_schema().message_key().unwrap().to_string()],
+            "foo bar baz".into()
+        );
         assert_eq!(
             log[log_schema().timestamp_key().unwrap().to_string()],
             "2020-01-08T22:33:57.353034+00:00"
@@ -613,8 +617,14 @@ mod tests {
                 .unwrap()
                 .into()
         );
-        assert_eq!(log[log_schema().host_key()], "host".into());
-        assert_eq!(log[log_schema().source_type_key()], "heroku_logs".into());
+        assert_eq!(
+            log[log_schema().host_key().unwrap().to_string().as_str()],
+            "host".into()
+        );
+        assert_eq!(
+            log[log_schema().source_type_key().unwrap().to_string()],
+            "heroku_logs".into()
+        );
     }
 
     #[test]
@@ -625,7 +635,7 @@ mod tests {
         let log = events[0].as_log();
 
         assert_eq!(
-            log[log_schema().message_key()],
+            log[log_schema().message_key().unwrap().to_string()],
             "what am i doing here".into()
         );
         assert!(log
@@ -634,7 +644,10 @@ mod tests {
                 log_schema().timestamp_key().unwrap()
             ))
             .is_some());
-        assert_eq!(log[log_schema().source_type_key()], "heroku_logs".into());
+        assert_eq!(
+            log[log_schema().source_type_key().unwrap().to_string()],
+            "heroku_logs".into()
+        );
     }
 
     #[test]
@@ -644,7 +657,10 @@ mod tests {
         let events = super::line_to_events(Default::default(), log_namespace, body.into());
         let log = events[0].as_log();
 
-        assert_eq!(log[log_schema().message_key()], "i'm not that long".into());
+        assert_eq!(
+            log[log_schema().message_key().unwrap().to_string()],
+            "i'm not that long".into()
+        );
         assert_eq!(
             log[log_schema().timestamp_key().unwrap().to_string()],
             "2020-01-08T22:33:57.353034+00:00"
@@ -652,8 +668,14 @@ mod tests {
                 .unwrap()
                 .into()
         );
-        assert_eq!(log[log_schema().host_key()], "host".into());
-        assert_eq!(log[log_schema().source_type_key()], "heroku_logs".into());
+        assert_eq!(
+            log[log_schema().host_key().unwrap().to_string().as_str()],
+            "host".into()
+        );
+        assert_eq!(
+            log[log_schema().source_type_key().unwrap().to_string()],
+            "heroku_logs".into()
+        );
     }
 
     #[test]
@@ -694,7 +716,7 @@ mod tests {
                 .with_metadata_field(
                     &owned_value_path!(LogplexConfig::NAME, "app_name"),
                     Kind::bytes(),
-                    None,
+                    Some("service"),
                 )
                 .with_metadata_field(
                     &owned_value_path!(LogplexConfig::NAME, "proc_id"),
@@ -731,7 +753,11 @@ mod tests {
         .with_event_field(&owned_value_path!("source_type"), Kind::bytes(), None)
         .with_event_field(&owned_value_path!("timestamp"), Kind::timestamp(), None)
         .with_event_field(&owned_value_path!("host"), Kind::bytes(), Some("host"))
-        .with_event_field(&owned_value_path!("app_name"), Kind::bytes(), None)
+        .with_event_field(
+            &owned_value_path!("app_name"),
+            Kind::bytes(),
+            Some("service"),
+        )
         .with_event_field(&owned_value_path!("proc_id"), Kind::bytes(), None)
         .unknown_fields(Kind::bytes());
 

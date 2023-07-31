@@ -3,7 +3,7 @@ use lookup::lookup_v2::OptionalValuePath;
 use vector_common::sensitive_string::SensitiveString;
 use vector_config::configurable_component;
 
-use super::host_key;
+use super::config_host_key;
 use crate::sinks::splunk_hec::common::config_timestamp_key;
 use crate::{
     codecs::EncodingConfig,
@@ -26,7 +26,7 @@ use crate::{
 pub(super) const HOST: &str = "https://cloud.humio.com";
 
 /// Configuration for the `humio_logs` sink.
-#[configurable_component(sink("humio_logs"))]
+#[configurable_component(sink("humio_logs", "Deliver log event data to Humio."))]
 #[derive(Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct HumioLogsConfig {
@@ -74,8 +74,8 @@ pub struct HumioLogsConfig {
     /// By default, the [global `log_schema.host_key` option][global_host_key] is used.
     ///
     /// [global_host_key]: https://vector.dev/docs/reference/configuration/global-options/#log_schema.host_key
-    #[serde(default = "host_key")]
-    pub(super) host_key: String,
+    #[serde(default = "config_host_key")]
+    pub(super) host_key: OptionalValuePath,
 
     /// Event fields to be added to Humio’s extra fields.
     ///
@@ -154,7 +154,7 @@ impl GenerateConfig for HumioLogsConfig {
             event_type: None,
             indexed_fields: vec![],
             index: None,
-            host_key: host_key(),
+            host_key: config_host_key(),
             compression: Compression::default(),
             request: TowerRequestConfig::default(),
             batch: BatchConfig::default(),
@@ -168,6 +168,7 @@ impl GenerateConfig for HumioLogsConfig {
 }
 
 #[async_trait::async_trait]
+#[typetag::serde(name = "humio_logs")]
 impl SinkConfig for HumioLogsConfig {
     async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
         self.build_hec_config().build(cx).await
@@ -230,6 +231,7 @@ mod integration_tests {
     use serde::Deserialize;
     use serde_json::{json, Value as JsonValue};
     use tokio::time::Duration;
+    use vrl::path::PathPrefix;
 
     use super::*;
     use crate::{
@@ -250,7 +252,7 @@ mod integration_tests {
     async fn humio_insert_message() {
         wait_ready().await;
 
-        let cx = SinkContext::new_test();
+        let cx = SinkContext::default();
 
         let repo = create_repository().await;
 
@@ -261,16 +263,13 @@ mod integration_tests {
         let message = random_string(100);
         let host = "192.168.1.1".to_string();
         let mut event = LogEvent::from(message.clone());
-        event.insert(log_schema().host_key(), host.clone());
+        event.insert(
+            (PathPrefix::Event, log_schema().host_key().unwrap()),
+            host.clone(),
+        );
 
         let ts = Utc.timestamp_nanos(Utc::now().timestamp_millis() * 1_000_000 + 132_456);
-        event.insert(
-            (
-                lookup::PathPrefix::Event,
-                log_schema().timestamp_key().unwrap(),
-            ),
-            ts,
-        );
+        event.insert(log_schema().timestamp_key_target_path().unwrap(), ts);
 
         run_and_assert_sink_compliance(sink, stream::once(ready(event)), &HTTP_SINK_TAGS).await;
 
@@ -300,7 +299,7 @@ mod integration_tests {
     async fn humio_insert_source() {
         wait_ready().await;
 
-        let cx = SinkContext::new_test();
+        let cx = SinkContext::default();
 
         let repo = create_repository().await;
 
@@ -336,7 +335,7 @@ mod integration_tests {
             let mut config = config(&repo.default_ingest_token);
             config.event_type = Template::try_from("json".to_string()).ok();
 
-            let (sink, _) = config.build(SinkContext::new_test()).await.unwrap();
+            let (sink, _) = config.build(SinkContext::default()).await.unwrap();
 
             let message = random_string(100);
             let mut event = LogEvent::from(message.clone());
@@ -362,7 +361,7 @@ mod integration_tests {
         {
             let config = config(&repo.default_ingest_token);
 
-            let (sink, _) = config.build(SinkContext::new_test()).await.unwrap();
+            let (sink, _) = config.build(SinkContext::default()).await.unwrap();
 
             let message = random_string(100);
             let event = LogEvent::from(message.clone());
@@ -386,7 +385,9 @@ mod integration_tests {
             source: None,
             encoding: JsonSerializerConfig::default().into(),
             event_type: None,
-            host_key: log_schema().host_key().to_string(),
+            host_key: OptionalValuePath {
+                path: log_schema().host_key().cloned(),
+            },
             indexed_fields: vec![],
             index: None,
             compression: Compression::None,

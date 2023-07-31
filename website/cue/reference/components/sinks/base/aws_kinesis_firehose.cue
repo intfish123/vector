@@ -50,6 +50,15 @@ base: components: sinks: aws_kinesis_firehose: configuration: {
 				required:    true
 				type: string: examples: ["/my/aws/credentials"]
 			}
+			external_id: {
+				description: """
+					The optional unique external ID in conjunction with role to assume.
+
+					[external_id]: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html
+					"""
+				required: false
+				type: string: examples: ["randomEXAMPLEidString"]
+			}
 			imds: {
 				description: "Configuration for authenticating with AWS through IMDS."
 				required:    false
@@ -175,6 +184,11 @@ base: components: sinks: aws_kinesis_firehose: configuration: {
 					[Zlib][zlib] compression.
 
 					[zlib]: https://zlib.net/
+					"""
+				zstd: """
+					[Zstandard][zstd] compression.
+
+					[zstd]: https://facebook.github.io/zstd/
 					"""
 			}
 		}
@@ -474,6 +488,11 @@ base: components: sinks: aws_kinesis_firehose: configuration: {
 				}
 			}
 		}
+	}
+	request_retry_partial: {
+		description: "Whether or not to retry successful requests containing partial failures."
+		required:    false
+		type: bool: default: false
 	}
 	stream_name: {
 		description: """

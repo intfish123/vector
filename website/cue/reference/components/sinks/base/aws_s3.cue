@@ -125,6 +125,15 @@ base: components: sinks: aws_s3: configuration: {
 				required:    true
 				type: string: examples: ["/my/aws/credentials"]
 			}
+			external_id: {
+				description: """
+					The optional unique external ID in conjunction with role to assume.
+
+					[external_id]: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html
+					"""
+				required: false
+				type: string: examples: ["randomEXAMPLEidString"]
+			}
 			imds: {
 				description: "Configuration for authenticating with AWS through IMDS."
 				required:    false
@@ -259,6 +268,11 @@ base: components: sinks: aws_s3: configuration: {
 					[Zlib][zlib] compression.
 
 					[zlib]: https://zlib.net/
+					"""
+				zstd: """
+					[Zstandard][zstd] compression.
+
+					[zstd]: https://facebook.github.io/zstd/
 					"""
 			}
 		}
@@ -722,8 +736,12 @@ base: components: sinks: aws_s3: configuration: {
 		}
 	}
 	server_side_encryption: {
-		description: "The Server-side Encryption algorithm used when storing these objects."
-		required:    false
+		description: """
+			AWS S3 Server-Side Encryption algorithms.
+
+			The Server-side Encryption algorithm used when storing these objects.
+			"""
+		required: false
 		type: string: enum: {
 			AES256: """
 				Each object is encrypted with AES-256 using a unique key.

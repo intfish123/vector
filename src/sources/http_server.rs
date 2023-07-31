@@ -81,7 +81,7 @@ pub struct SimpleHttpConfig {
 
     /// The expected encoding of received data.
     ///
-    /// Note: For `json` and `ndjson` encodings, the fields of the JSON objects are output as separate fields.
+    /// For `json` and `ndjson` encodings, the fields of the JSON objects are output as separate fields.
     #[serde(default)]
     encoding: Option<Encoding>,
 
@@ -202,11 +202,11 @@ impl SimpleHttpConfig {
                 ),
                 Encoding::Json => (
                     BytesDecoderConfig::new().into(),
-                    JsonDeserializerConfig::new().into(),
+                    JsonDeserializerConfig::default().into(),
                 ),
                 Encoding::Ndjson => (
                     NewlineDelimitedDecoderConfig::new().into(),
-                    JsonDeserializerConfig::new().into(),
+                    JsonDeserializerConfig::default().into(),
                 ),
                 Encoding::Binary => (
                     BytesDecoderConfig::new().into(),
@@ -256,7 +256,7 @@ impl_generate_config_from_default!(SimpleHttpConfig);
 impl ValidatableComponent for SimpleHttpConfig {
     fn validation_configuration() -> ValidationConfiguration {
         let config = Self {
-            decoding: Some(DeserializerConfig::Json),
+            decoding: Some(DeserializerConfig::Json(Default::default())),
             ..Default::default()
         };
 
@@ -654,7 +654,10 @@ mod tests {
         {
             let event = events.remove(0);
             let log = event.as_log();
-            assert_eq!(log[log_schema().message_key()], "test body".into());
+            assert_eq!(
+                log[log_schema().message_key().unwrap().to_string()],
+                "test body".into()
+            );
             assert!(log
                 .get((
                     lookup::PathPrefix::Event,
@@ -662,7 +665,7 @@ mod tests {
                 ))
                 .is_some());
             assert_eq!(
-                log[log_schema().source_type_key()],
+                log[log_schema().source_type_key().unwrap().to_string()],
                 SimpleHttpConfig::NAME.into()
             );
             assert_eq!(log["http_path"], "/".into());
@@ -671,7 +674,10 @@ mod tests {
         {
             let event = events.remove(0);
             let log = event.as_log();
-            assert_eq!(log[log_schema().message_key()], "test body 2".into());
+            assert_eq!(
+                log[log_schema().message_key().unwrap().to_string()],
+                "test body 2".into()
+            );
             assert_event_metadata(log).await;
         }
     }
@@ -703,13 +709,19 @@ mod tests {
         {
             let event = events.remove(0);
             let log = event.as_log();
-            assert_eq!(log[log_schema().message_key()], "test body".into());
+            assert_eq!(
+                log[log_schema().message_key().unwrap().to_string()],
+                "test body".into()
+            );
             assert_event_metadata(log).await;
         }
         {
             let event = events.remove(0);
             let log = event.as_log();
-            assert_eq!(log[log_schema().message_key()], "test body 2".into());
+            assert_eq!(
+                log[log_schema().message_key().unwrap().to_string()],
+                "test body 2".into()
+            );
             assert_event_metadata(log).await;
         }
     }
@@ -742,7 +754,10 @@ mod tests {
         {
             let event = events.remove(0);
             let log = event.as_log();
-            assert_eq!(log[log_schema().message_key()], "foo\nbar".into());
+            assert_eq!(
+                log[log_schema().message_key().unwrap().to_string()],
+                "foo\nbar".into()
+            );
             assert_event_metadata(log).await;
         }
     }
@@ -760,7 +775,7 @@ mod tests {
                 EventStatus::Delivered,
                 true,
                 None,
-                Some(JsonDeserializerConfig::new().into()),
+                Some(JsonDeserializerConfig::default().into()),
             )
             .await;
 
@@ -810,7 +825,7 @@ mod tests {
                 EventStatus::Delivered,
                 true,
                 None,
-                Some(JsonDeserializerConfig::new().into()),
+                Some(JsonDeserializerConfig::default().into()),
             )
             .await;
 
@@ -853,7 +868,7 @@ mod tests {
                 EventStatus::Delivered,
                 true,
                 None,
-                Some(JsonDeserializerConfig::new().into()),
+                Some(JsonDeserializerConfig::default().into()),
             )
             .await;
 
@@ -902,7 +917,7 @@ mod tests {
                 EventStatus::Delivered,
                 true,
                 None,
-                Some(JsonDeserializerConfig::new().into()),
+                Some(JsonDeserializerConfig::default().into()),
             )
             .await;
 
@@ -958,10 +973,16 @@ mod tests {
                 log_schema().timestamp_key().unwrap()
             ))
             .is_some());
-        assert_eq!(
-            log[log_schema().source_type_key()],
-            SimpleHttpConfig::NAME.into()
-        );
+
+        let source_type_key_value = log
+            .get((
+                lookup::PathPrefix::Event,
+                log_schema().source_type_key().unwrap(),
+            ))
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_eq!(source_type_key_value, SimpleHttpConfig::NAME);
         assert_eq!(log["http_path"], "/".into());
     }
 
@@ -986,7 +1007,7 @@ mod tests {
                 EventStatus::Delivered,
                 true,
                 None,
-                Some(JsonDeserializerConfig::new().into()),
+                Some(JsonDeserializerConfig::default().into()),
             )
             .await;
 
@@ -1027,7 +1048,7 @@ mod tests {
                 EventStatus::Delivered,
                 true,
                 None,
-                Some(JsonDeserializerConfig::new().into()),
+                Some(JsonDeserializerConfig::default().into()),
             )
             .await;
 
@@ -1088,7 +1109,10 @@ mod tests {
         {
             let event = events.remove(0);
             let log = event.as_log();
-            assert_eq!(log[log_schema().message_key()], "test body".into());
+            assert_eq!(
+                log[log_schema().message_key().unwrap().to_string()],
+                "test body".into()
+            );
             assert_event_metadata(log).await;
         }
     }
@@ -1106,7 +1130,7 @@ mod tests {
                 EventStatus::Delivered,
                 true,
                 None,
-                Some(JsonDeserializerConfig::new().into()),
+                Some(JsonDeserializerConfig::default().into()),
             )
             .await;
 
@@ -1131,7 +1155,7 @@ mod tests {
                 ))
                 .is_some());
             assert_eq!(
-                log[log_schema().source_type_key()],
+                log[log_schema().source_type_key().unwrap().to_string()],
                 SimpleHttpConfig::NAME.into()
             );
         }
@@ -1150,7 +1174,7 @@ mod tests {
                 EventStatus::Delivered,
                 true,
                 None,
-                Some(JsonDeserializerConfig::new().into()),
+                Some(JsonDeserializerConfig::default().into()),
             )
             .await;
 
@@ -1184,7 +1208,7 @@ mod tests {
                 ))
                 .is_some());
             assert_eq!(
-                log[log_schema().source_type_key()],
+                log[log_schema().source_type_key().unwrap().to_string()],
                 SimpleHttpConfig::NAME.into()
             );
         }
@@ -1200,7 +1224,7 @@ mod tests {
                 ))
                 .is_some());
             assert_eq!(
-                log[log_schema().source_type_key()],
+                log[log_schema().source_type_key().unwrap().to_string()],
                 SimpleHttpConfig::NAME.into()
             );
         }
@@ -1219,7 +1243,7 @@ mod tests {
             EventStatus::Delivered,
             true,
             None,
-            Some(JsonDeserializerConfig::new().into()),
+            Some(JsonDeserializerConfig::default().into()),
         )
         .await;
 
